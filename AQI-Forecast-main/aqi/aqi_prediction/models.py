@@ -4,6 +4,7 @@ class AQIData(models.Model):
     datetime = models.DateTimeField()
     pm25 = models.FloatField()
     o3 = models.FloatField()
+    city = models.CharField(max_length=50, default='Mumbai')
     
     class Meta:
         ordering = ['datetime']
@@ -16,6 +17,7 @@ class AQIPrediction(models.Model):
     overall_aqi = models.FloatField()
     aqi_category = models.CharField(max_length=50)
     model_type = models.CharField(max_length=50, default='default')
+    city = models.CharField(max_length=50, default='Mumbai')
 
     def __str__(self):
-        return f"Prediction at {self.prediction_datetime}"
+        return f"Prediction for {self.city} at {self.prediction_datetime}"

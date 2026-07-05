@@ -11,6 +11,7 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser):
         parser.add_argument('csv_file', type=str, help='Path to the CSV file')
+        parser.add_argument('--city', type=str, default='Mumbai', help='City name for the loaded data')
 
     def handle(self, *args, **options):
         try:
@@ -99,7 +100,8 @@ class Command(BaseCommand):
                     AQIData.objects.create(
                         datetime=row['datetime'],
                         pm25=pm25,
-                        o3=o3
+                        o3=o3,
+                        city=options['city']
                     )
                     success_count += 1
                     

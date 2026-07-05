@@ -14,6 +14,10 @@
             
             <form method="post" class="mb-8" id="predictionForm">
                 {% csrf_token %}
+                <div class="mb-4 animate-fade-in">
+                    {{ form.city.label_tag }}
+                    {{ form.city }}
+                </div>
                 <div class="mb-4">
                     {{ form.prediction_datetime.label_tag }}
                     <input type="datetime-local" 

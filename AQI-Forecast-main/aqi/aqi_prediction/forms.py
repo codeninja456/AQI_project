@@ -8,7 +8,23 @@ MODEL_CHOICES = [
     # ('decision_tree', 'Decision Tree'),
 ]
 
+CITY_CHOICES = [
+    ('Mumbai', 'Mumbai'),
+    ('Thane', 'Thane'),
+]
+
 class PredictionForm(forms.Form):
+    city = forms.ChoiceField(
+        choices=CITY_CHOICES,
+        label='Select City',
+        initial='Mumbai',
+        widget=forms.Select(attrs={
+            'class': 'border rounded px-3 py-2 w-full mb-4',
+            'aria-label': 'Select city'
+        }),
+        help_text='Choose the city for AQI prediction'
+    )
+
     prediction_datetime = forms.DateTimeField(
         widget=forms.DateTimeInput(attrs={
             'type': 'datetime-local',

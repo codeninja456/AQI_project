@@ -107,9 +107,9 @@ def print_performance_metrics(y_true, y_pred, model_name, feature_importance=Non
     print("\n" + "="*50)
     return rmse, mae, r2, mape if mask.any() else None
 
-def train_model(model_type):
+def train_model(model_type, city="Mumbai"):
     # Load and prepare data
-    data = AQIData.objects.all().values()
+    data = AQIData.objects.filter(city=city).values()
     df = pd.DataFrame(data)
     
     # Sort by datetime to ensure proper sequence
@@ -555,11 +555,12 @@ def predict_aqi(request):
     if request.method == 'POST' and form.is_valid():
         prediction_datetime = form.cleaned_data['prediction_datetime']
         model_type = form.cleaned_data['model']
+        city = form.cleaned_data['city']
 
         # Get historical records first
-        last_records = AQIData.objects.order_by('-datetime')[:24]  # Get at least 24 records
+        last_records = AQIData.objects.filter(city=city).order_by('-datetime')[:24]  # Get at least 24 records
         if len(last_records) < 24:
-            return HttpResponse("Need at least 24 historical records")
+            return HttpResponse(f"Need at least 24 historical records for {city}")
         
         # Create DataFrame from records
         records_df = pd.DataFrame(list(last_records.values()))
@@ -569,7 +570,7 @@ def predict_aqi(request):
         # Get recent actual value before model-specific code
         recent_actual = records_df['pm25'].iloc[-1]
 
-        result = train_model(model_type)
+        result = train_model(model_type, city=city)
         if result is None:
             return HttpResponse("Invalid model type")
         
@@ -577,9 +578,9 @@ def predict_aqi(request):
             (model, (scaler_X, scaler_y), sequence_length), features = result
             
             # Get exactly sequence_length records
-            last_records = AQIData.objects.order_by('-datetime')[:sequence_length]
+            last_records = AQIData.objects.filter(city=city).order_by('-datetime')[:sequence_length]
             if len(last_records) < sequence_length:
-                return HttpResponse(f"Need at least {sequence_length} historical records")
+                return HttpResponse(f"Need at least {sequence_length} historical records for {city}")
             
             records_df = pd.DataFrame(list(last_records.values()))
             records_df['datetime'] = pd.to_datetime(records_df['datetime'])
@@ -707,7 +708,8 @@ def predict_aqi(request):
                 o3_prediction=recent_actual,  # Using recent_actual for O3
                 overall_aqi=overall_aqi,
                 aqi_category=aqi_category,
-                model_type=model_type
+                model_type=model_type,
+                city=city
             )
             new_prediction.save()
 
@@ -854,7 +856,8 @@ def predict_aqi(request):
             o3_prediction=recent_actual,  # Using recent_actual for O3
             overall_aqi=overall_aqi,
             aqi_category=aqi_category,
-            model_type=model_type
+            model_type=model_type,
+            city=city
         )
         new_prediction.save()
 
