@@ -560,7 +560,16 @@ def predict_aqi(request):
         # Get historical records first
         last_records = AQIData.objects.filter(city=city).order_by('-datetime')[:24]  # Get at least 24 records
         if len(last_records) < 24:
-            return HttpResponse(f"Need at least 24 historical records for {city}")
+            from django.core.management import call_command
+            try:
+                # Automatically fetch 30 days of data for the city
+                call_command('fetch_historical_aqi', city=city, days=30)
+                last_records = AQIData.objects.filter(city=city).order_by('-datetime')[:24]
+            except Exception as e:
+                return HttpResponse(f"Error fetching historical data for {city}: {str(e)}")
+            
+            if len(last_records) < 24:
+                return HttpResponse(f"Need at least 24 historical records for {city}. Loaded failed.")
         
         # Create DataFrame from records
         records_df = pd.DataFrame(list(last_records.values()))
