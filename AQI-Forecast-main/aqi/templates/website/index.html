@@ -18,12 +18,18 @@
             <div id="aqi-map" class="w-full h-[500px] rounded-lg shadow-xl border border-teal-200"></div>
         </div>
 
+        <!-- City Selector Buttons -->
+        <div class="flex justify-center gap-4 mb-8">
+            <a href="?city=Mumbai" class="px-6 py-3 rounded-xl font-bold text-lg transition-all {% if selected_city == 'Mumbai' %}bg-teal-600 text-white shadow-lg scale-105{% else %}bg-white text-teal-600 border border-teal-200 hover:bg-teal-50 hover:shadow-md{% endif %}">Mumbai</a>
+            <a href="?city=Thane" class="px-6 py-3 rounded-xl font-bold text-lg transition-all {% if selected_city == 'Thane' %}bg-teal-600 text-white shadow-lg scale-105{% else %}bg-white text-teal-600 border border-teal-200 hover:bg-teal-50 hover:shadow-md{% endif %}">Thane</a>
+        </div>
+
         <!-- Weather and AQI Grid -->
         <div class="grid md:grid-cols-2 gap-8 mb-12">
             <!-- Weather Section -->
             <div class="bg-white rounded-xl shadow-lg overflow-hidden border border-teal-100 transform transition-all hover:scale-[1.02]">
                 <div class="bg-gradient-to-r from-teal-500 to-blue-500 px-6 py-4">
-                    <h2 class="text-white text-2xl font-bold">Weather Forecast</h2>
+                    <h2 class="text-white text-2xl font-bold">Weather Forecast ({{ selected_city }})</h2>
                 </div>
                 <div class="p-6">
                     {% if weather %}
@@ -69,7 +75,7 @@
             <!-- AQI Section - Mirror the weather section style -->
             <div class="bg-white rounded-xl shadow-lg overflow-hidden border border-teal-100 transform transition-all hover:scale-[1.02]">
                 <div class="bg-gradient-to-r from-blue-500 to-teal-500 px-6 py-4">
-                    <h2 class="text-white text-2xl font-bold">Real-time AQI</h2>
+                    <h2 class="text-white text-2xl font-bold">Real-time AQI ({{ selected_city }})</h2>
                 </div>
                 <div class="p-6">
                     {% if aqi %}
@@ -194,27 +200,23 @@
         <div class="bg-gradient-to-br from-white to-teal-50 rounded-xl shadow-lg p-8 border border-teal-100">
             <h2 class="text-3xl font-bold text-gray-800 mb-6">About This Site</h2>
             <p class="text-gray-700 text-lg leading-relaxed">
-                This site provides a daily air quality forecast for Kathmandu, Nepal, as well as real-time data. Air quality data is collected from government monitoring stations and is subject to change. The forecast is based on historical data and meteorological conditions. For more information, please visit our about page.
+                This site provides daily air quality forecasts and real-time data for the Mumbai and Thane regions. The predictions are generated using advanced machine learning models trained on historical air quality records and local meteorological patterns. For more information about the systems and team, please visit our about page.
             </p>
         </div>
     </div>
 
     <script>
-        var map = L.map('aqi-map').setView([28.3949, 84.1240], 5);  // Centered on Nepal
+        var map = L.map('aqi-map').setView([19.15, 72.93], 10);  // Centered on Mumbai/Thane
 
         L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
             maxZoom: 19,
             attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
         }).addTo(map);
 
-        //locations in Nepal (latitude, longitude)
+        //locations in India (latitude, longitude)
         var locations = [
-            { name: "Kathmandu", lat: 27.7172, lon: 85.3240 },
-            { name: "Pokhara", lat: 28.2096, lon: 83.9856 },
-            { name: "Biratnagar", lat: 26.4622, lon: 87.2830 },
-            { name: "Nepalgunj", lat: 28.1001, lon: 81.6543 },
-            { name: "Bhaktapur", lat: 27.6710, lon: 85.4282 }
-            // Add more location
+            { name: "Mumbai", lat: 19.0760, lon: 72.8777 },
+            { name: "Thane", lat: 19.2183, lon: 72.9781 }
         ];
 
         // Add custom marker styling
@@ -262,10 +264,13 @@
                     var o3 = data.list[0].components.o3;
 
                     var aqiPopup = `
-                        <b>${location.name}, Nepal</b><br>
-                        AQI: ${aqi}<br>
-                        PM2.5: ${pm25} µg/m³<br>
-                        O₃: ${o3} µg/m³
+                        <div class="p-1">
+                            <b class="text-lg text-teal-800">${location.name}, India</b><br>
+                            <span class="font-semibold text-gray-700">AQI:</span> ${aqi}<br>
+                            <span class="font-semibold text-gray-700">PM2.5:</span> ${pm25} µg/m³<br>
+                            <span class="font-semibold text-gray-700">O₃:</span> ${o3} µg/m³<br>
+                            <a href="?city=${location.name}" class="mt-2 inline-block bg-teal-600 hover:bg-teal-700 text-white font-bold py-1 px-3 rounded text-center transition-all text-xs">Select City</a>
+                        </div>
                     `;
 
                     L.marker([location.lat, location.lon], {icon: customIcon}).addTo(map)
