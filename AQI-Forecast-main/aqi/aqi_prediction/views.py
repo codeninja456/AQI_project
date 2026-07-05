@@ -555,7 +555,16 @@ def predict_aqi(request):
     if request.method == 'POST' and form.is_valid():
         prediction_datetime = form.cleaned_data['prediction_datetime']
         model_type = form.cleaned_data['model']
-        city = form.cleaned_data['city']
+        city_raw = form.cleaned_data['city'].strip().title()
+
+        # Geocode the city dynamically to get the official name and coordinates
+        from aqi.views import geocode_city
+        geocoded = geocode_city(city_raw)
+        if not geocoded:
+            return HttpResponse(f"Could not find city '{city_raw}' in India. Please check the spelling.")
+        
+        resolved_name, lat, lon = geocoded
+        city = resolved_name
 
         # Get historical records first
         last_records = AQIData.objects.filter(city=city).order_by('-datetime')[:24]  # Get at least 24 records

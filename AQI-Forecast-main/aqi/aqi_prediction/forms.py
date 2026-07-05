@@ -8,21 +8,17 @@ MODEL_CHOICES = [
     # ('decision_tree', 'Decision Tree'),
 ]
 
-CITY_CHOICES = [
-    ('Mumbai', 'Mumbai'),
-    ('Thane', 'Thane'),
-]
-
 class PredictionForm(forms.Form):
-    city = forms.ChoiceField(
-        choices=CITY_CHOICES,
-        label='Select City',
+    city = forms.CharField(
+        max_length=100,
+        label='City Name (in India)',
         initial='Mumbai',
-        widget=forms.Select(attrs={
+        widget=forms.TextInput(attrs={
             'class': 'border rounded px-3 py-2 w-full mb-4',
-            'aria-label': 'Select city'
+            'placeholder': 'e.g. Mumbai, Pune, Delhi, Bengaluru',
+            'aria-label': 'City name'
         }),
-        help_text='Choose the city for AQI prediction'
+        help_text='Enter the city name for AQI prediction'
     )
 
     prediction_datetime = forms.DateTimeField(

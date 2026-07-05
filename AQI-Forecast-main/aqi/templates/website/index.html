@@ -18,10 +18,21 @@
             <div id="aqi-map" class="w-full h-[500px] rounded-lg shadow-xl border border-teal-200"></div>
         </div>
 
-        <!-- City Selector Buttons -->
-        <div class="flex justify-center gap-4 mb-8">
-            <a href="?city=Mumbai" class="px-6 py-3 rounded-xl font-bold text-lg transition-all {% if selected_city == 'Mumbai' %}bg-teal-600 text-white shadow-lg scale-105{% else %}bg-white text-teal-600 border border-teal-200 hover:bg-teal-50 hover:shadow-md{% endif %}">Mumbai</a>
-            <a href="?city=Thane" class="px-6 py-3 rounded-xl font-bold text-lg transition-all {% if selected_city == 'Thane' %}bg-teal-600 text-white shadow-lg scale-105{% else %}bg-white text-teal-600 border border-teal-200 hover:bg-teal-50 hover:shadow-md{% endif %}">Thane</a>
+        <!-- City Search Bar -->
+        <div class="max-w-2xl mx-auto mb-10">
+            <form method="get" action="" class="flex gap-4">
+                <div class="relative flex-grow">
+                    <span class="absolute inset-y-0 left-0 flex items-center pl-4 text-teal-600">
+                        <svg class="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
+                        </svg>
+                    </span>
+                    <input type="text" name="city" placeholder="Search any city in India..." value="{{ selected_city }}" class="pl-12 pr-4 py-3 w-full border border-teal-200 rounded-xl shadow-sm focus:outline-none focus:ring-2 focus:ring-teal-500 text-lg font-medium text-gray-800 bg-white">
+                </div>
+                <button type="submit" class="bg-teal-600 hover:bg-teal-700 text-white font-bold px-8 py-3 rounded-xl shadow-lg transition-all text-lg flex items-center gap-2 hover:scale-[1.02]">
+                    Search
+                </button>
+            </form>
         </div>
 
         <!-- Weather and AQI Grid -->
@@ -200,13 +211,13 @@
         <div class="bg-gradient-to-br from-white to-teal-50 rounded-xl shadow-lg p-8 border border-teal-100">
             <h2 class="text-3xl font-bold text-gray-800 mb-6">About This Site</h2>
             <p class="text-gray-700 text-lg leading-relaxed">
-                This site provides daily air quality forecasts and real-time data for the Mumbai and Thane regions. The predictions are generated using advanced machine learning models trained on historical air quality records and local meteorological patterns. For more information about the systems and team, please visit our about page.
+                This site provides daily air quality forecasts and real-time data for cities across India. The predictions are generated using advanced machine learning models trained on historical air quality records and local meteorological patterns. For more information about the systems and team, please visit our about page.
             </p>
         </div>
     </div>
 
     <script>
-        var map = L.map('aqi-map').setView([19.15, 72.93], 10);  // Centered on Mumbai/Thane
+        var map = L.map('aqi-map').setView([{{ weather.coord.lat|default:19.0760 }}, {{ weather.coord.lon|default:72.8777 }}], 10);  // Centered dynamically on the selected city
 
         L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
             maxZoom: 19,
@@ -215,8 +226,7 @@
 
         //locations in India (latitude, longitude)
         var locations = [
-            { name: "Mumbai", lat: 19.0760, lon: 72.8777 },
-            { name: "Thane", lat: 19.2183, lon: 72.9781 }
+            { name: "{{ selected_city|escapejs }}", lat: {{ weather.coord.lat|default:19.0760 }}, lon: {{ weather.coord.lon|default:72.8777 }} }
         ];
 
         // Add custom marker styling
@@ -268,8 +278,7 @@
                             <b class="text-lg text-teal-800">${location.name}, India</b><br>
                             <span class="font-semibold text-gray-700">AQI:</span> ${aqi}<br>
                             <span class="font-semibold text-gray-700">PM2.5:</span> ${pm25} µg/m³<br>
-                            <span class="font-semibold text-gray-700">O₃:</span> ${o3} µg/m³<br>
-                            <a href="?city=${location.name}" class="mt-2 inline-block bg-teal-600 hover:bg-teal-700 text-white font-bold py-1 px-3 rounded text-center transition-all text-xs">Select City</a>
+                            <span class="font-semibold text-gray-700">O₃:</span> ${o3} µg/m³
                         </div>
                     `;
 

@@ -15,9 +15,23 @@ def about(request):
     return render(request,'website//about.html')
 
 # weather data fetch
-def get_weather_data(city="Mumbai"):
+def geocode_city(city_name):
     api_key = settings.WEATHER_API_KEY
-    url = f"http://api.openweathermap.org/data/2.5/weather?q={city}&appid={api_key}&units=metric"
+    # Restrict to India (IN)
+    url = f"http://api.openweathermap.org/geo/1.0/direct?q={city_name},IN&limit=1&appid={api_key}"
+    try:
+        response = requests.get(url)
+        if response.status_code == 200:
+            data = response.json()
+            if data:
+                return data[0]['name'], data[0]['lat'], data[0]['lon']
+    except Exception:
+        pass
+    return None
+
+def get_weather_data(lat, lon):
+    api_key = settings.WEATHER_API_KEY
+    url = f"http://api.openweathermap.org/data/2.5/weather?lat={lat}&lon={lon}&appid={api_key}&units=metric"
 
     response = requests.get(url)
     if response.status_code == 200:
@@ -26,13 +40,7 @@ def get_weather_data(city="Mumbai"):
         return None
 
 # aqi data fetch
-def get_aqi_data(city="Mumbai"):
-    # Latitude and longitude for Mumbai and Thane
-    COORDINATES = {
-        "Mumbai": (19.0760, 72.8777),
-        "Thane": (19.2183, 72.9781)
-    }
-    lat, lon = COORDINATES.get(city, (19.0760, 72.8777))
+def get_aqi_data(lat, lon):
     api_key = settings.WEATHER_API_KEY
     url = f"http://api.openweathermap.org/data/2.5/air_pollution?lat={lat}&lon={lon}&appid={api_key}"
 
@@ -44,17 +52,24 @@ def get_aqi_data(city="Mumbai"):
     
 @login_required
 def home(request):
-    selected_city = request.GET.get('city', 'Mumbai')
-    if selected_city not in ["Mumbai", "Thane"]:
+    selected_city = request.GET.get('city', 'Mumbai').strip()
+    if not selected_city:
         selected_city = "Mumbai"
         
-    weather_data = get_weather_data(selected_city)
-    aqi_data = get_aqi_data(selected_city)
+    geocoded = geocode_city(selected_city)
+    if geocoded:
+        resolved_name, lat, lon = geocoded
+    else:
+        # Fallback to Mumbai
+        resolved_name, lat, lon = "Mumbai", 19.0760, 72.8777
+        
+    weather_data = get_weather_data(lat, lon)
+    aqi_data = get_aqi_data(lat, lon)
     
     context = {
         'weather': weather_data,
         'aqi': aqi_data,
-        'selected_city': selected_city,
+        'selected_city': resolved_name,
     }
     return render(request, 'website//index.html', context)
 

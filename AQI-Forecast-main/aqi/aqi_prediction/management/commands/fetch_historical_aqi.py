@@ -9,20 +9,22 @@ class Command(BaseCommand):
     help = 'Fetch historical air pollution data from OpenWeatherMap API for Mumbai or Thane'
 
     def add_arguments(self, parser):
-        parser.add_argument('--city', type=str, default='Mumbai', choices=['Mumbai', 'Thane'], help='City name to fetch data for')
+        parser.add_argument('--city', type=str, default='Mumbai', help='City name to fetch data for')
         parser.add_argument('--days', type=int, default=180, help='Number of days of history to fetch (default: 180)')
 
     def handle(self, *args, **options):
-        city = options['city']
+        city_raw = options['city']
         days = options['days']
         
-        # Coordinates for cities
-        COORDINATES = {
-            "Mumbai": (19.0760, 72.8777),
-            "Thane": (19.2183, 72.9781)
-        }
-        
-        lat, lon = COORDINATES[city]
+        # Geocode the city dynamically to get the official name and coordinates
+        from aqi.views import geocode_city
+        geocoded = geocode_city(city_raw)
+        if not geocoded:
+            self.stdout.write(self.style.ERROR(f"Error: Could not resolve coordinates for city '{city_raw}' in India."))
+            return
+            
+        resolved_name, lat, lon = geocoded
+        city = resolved_name
         api_key = settings.WEATHER_API_KEY
         
         if not api_key:
