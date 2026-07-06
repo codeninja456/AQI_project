@@ -108,6 +108,52 @@ def print_performance_metrics(y_true, y_pred, model_name, feature_importance=Non
     return rmse, mae, r2, mape if mask.any() else None
 
 def train_model(model_type, city="Mumbai"):
+    import os
+    import joblib
+    import time
+    from django.conf import settings
+    
+    BASE_FEATURES = [
+        'pm25_lag1',
+        'pm25_lag2',
+        'pm25_lag3',
+        'pm25_lag24',
+        'pm25_rolling_mean_6',
+        'pm25_rolling_mean_12',
+        'pm25_rolling_mean_24',
+        'pm25_trend',
+        'month',
+        'month_sin',
+        'month_cos',
+        'is_peak_hour'
+    ]
+    
+    # Path where model cache is stored
+    CACHE_DIR = os.path.join(settings.BASE_DIR, 'models_cache')
+    os.makedirs(CACHE_DIR, exist_ok=True)
+    
+    rf_path = os.path.join(CACHE_DIR, f"{city.lower()}_rf.joblib")
+    lstm_model_path = os.path.join(CACHE_DIR, f"{city.lower()}_lstm.keras")
+    lstm_scalers_path = os.path.join(CACHE_DIR, f"{city.lower()}_lstm_scalers.joblib")
+    
+    if model_type == 'random_forest':
+        if os.path.exists(rf_path) and (time.time() - os.path.getmtime(rf_path) < 86400):
+            try:
+                pm25_model, scaler_X = joblib.load(rf_path)
+                return (pm25_model, None), scaler_X, BASE_FEATURES
+            except Exception as e:
+                print(f"Error loading cached RF model: {e}")
+                
+    elif model_type == 'lstm':
+        if os.path.exists(lstm_model_path) and os.path.exists(lstm_scalers_path) and (time.time() - os.path.getmtime(lstm_model_path) < 86400):
+            try:
+                from tensorflow.keras.models import load_model
+                model = load_model(lstm_model_path)
+                scaler_X, scaler_y, sequence_length = joblib.load(lstm_scalers_path)
+                return (model, (scaler_X, scaler_y), sequence_length), BASE_FEATURES
+            except Exception as e:
+                print(f"Error loading cached LSTM model: {e}")
+
     # Load and prepare data
     data = AQIData.objects.filter(city=city).values()
     df = pd.DataFrame(data)
@@ -221,6 +267,12 @@ def train_model(model_type, city="Mumbai"):
             pm25_model.feature_importances_,
             BASE_FEATURES
         )
+        
+        # Cache the trained model
+        try:
+            joblib.dump((pm25_model, scaler_X), rf_path)
+        except Exception as e:
+            print(f"Error caching RF model: {e}")
         
         return (pm25_model, None), scaler_X, BASE_FEATURES
     
@@ -336,6 +388,13 @@ def train_model(model_type, city="Mumbai"):
         print("\nTest Set Metrics:")
         print_performance_metrics(y_test_orig, test_pred, "LSTM (Test)")
         
+        # Cache the trained model and scalers
+        try:
+            model.save(lstm_model_path)
+            joblib.dump((scaler_X, scaler_y, sequence_length), lstm_scalers_path)
+        except Exception as e:
+            print(f"Error caching LSTM model: {e}")
+            
         return (model, (scaler_X, scaler_y), sequence_length), BASE_FEATURES
     
     return None
