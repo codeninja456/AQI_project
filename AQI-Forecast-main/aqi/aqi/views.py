@@ -66,10 +66,31 @@ def home(request):
     weather_data = get_weather_data(lat, lon)
     aqi_data = get_aqi_data(lat, lon)
     
+    from aqi_prediction.models import AQIData
+    import json
+    
+    # Get historical records for the selected city (chronological order)
+    past_records = AQIData.objects.filter(city=resolved_name).order_by('datetime')
+    if past_records.count() < 24:
+        from django.core.management import call_command
+        try:
+            call_command('fetch_historical_aqi', city=resolved_name, days=30)
+            past_records = AQIData.objects.filter(city=resolved_name).order_by('datetime')
+        except Exception:
+            pass
+            
+    # Serialize historical data for Chart.js
+    chart_dates = [r.datetime.strftime('%b %d, %I:%M %p') for r in past_records]
+    chart_pm25 = [float(r.pm25) for r in past_records]
+    chart_o3 = [float(r.o3) for r in past_records]
+    
     context = {
         'weather': weather_data,
         'aqi': aqi_data,
         'selected_city': resolved_name,
+        'chart_dates_json': json.dumps(chart_dates),
+        'chart_pm25_json': json.dumps(chart_pm25),
+        'chart_o3_json': json.dumps(chart_o3),
     }
     return render(request, 'website//index.html', context)
 

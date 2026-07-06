@@ -9,6 +9,7 @@
 <body class="bg-teal-100">
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.7.1/dist/leaflet.css" />
     <script src="https://unpkg.com/leaflet@1.7.1/dist/leaflet.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 
     <!-- Main content -->
     <div class="container mx-auto my-8 max-w-7xl px-4">
@@ -207,6 +208,19 @@
             </div>
         </div>
 
+        <!-- Air Quality Trends Card -->
+        <div class="bg-white rounded-xl shadow-lg p-8 border border-teal-100 mb-12">
+            <h2 class="text-3xl font-bold text-gray-800 mb-6 flex items-center gap-2">
+                <svg class="w-8 h-8 text-teal-600 animate-pulse" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 12l3-3 3 3 4-4M8 21h8a2 2 0 002-2V5a2 2 0 00-2-2H8a2 2 0 00-2 2v14a2 2 0 002 2z"></path>
+                </svg>
+                Air Quality Trends (Past 30 Days) - {{ selected_city }}
+            </h2>
+            <div class="relative w-full h-[400px]">
+                <canvas id="aqiTrendChart"></canvas>
+            </div>
+        </div>
+
         <!-- About Section -->
         <div class="bg-gradient-to-br from-white to-teal-50 rounded-xl shadow-lg p-8 border border-teal-100">
             <h2 class="text-3xl font-bold text-gray-800 mb-6">About This Site</h2>
@@ -289,6 +303,123 @@
                     console.error('Error fetching AQI data:', error);
                 });
         });
+
+        // Initialize Chart.js
+        const chartDates = {{ chart_dates_json|safe }};
+        const chartPM25 = {{ chart_pm25_json|safe }};
+        const chartO3 = {{ chart_o3_json|safe }};
+        
+        if (chartDates && chartDates.length > 0) {
+            const ctx = document.getElementById('aqiTrendChart').getContext('2d');
+            
+            // Create beautiful gradients
+            const pm25Gradient = ctx.createLinearGradient(0, 0, 0, 400);
+            pm25Gradient.addColorStop(0, 'rgba(13, 148, 136, 0.4)'); // Teal
+            pm25Gradient.addColorStop(1, 'rgba(13, 148, 136, 0.0)');
+            
+            const o3Gradient = ctx.createLinearGradient(0, 0, 0, 400);
+            o3Gradient.addColorStop(0, 'rgba(59, 130, 246, 0.4)'); // Blue
+            o3Gradient.addColorStop(1, 'rgba(59, 130, 246, 0.0)');
+            
+            new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: chartDates,
+                    datasets: [
+                        {
+                            label: 'PM2.5 (µg/m³)',
+                            data: chartPM25,
+                            borderColor: 'rgb(13, 148, 136)',
+                            backgroundColor: pm25Gradient,
+                            fill: true,
+                            tension: 0.4,
+                            borderWidth: 3,
+                            pointRadius: 1,
+                            pointHoverRadius: 6,
+                            pointBackgroundColor: 'rgb(13, 148, 136)',
+                            pointBorderColor: '#fff',
+                            pointBorderWidth: 2
+                        },
+                        {
+                            label: 'Ozone (O₃) (ppb)',
+                            data: chartO3,
+                            borderColor: 'rgb(59, 130, 246)',
+                            backgroundColor: o3Gradient,
+                            fill: true,
+                            tension: 0.4,
+                            borderWidth: 3,
+                            pointRadius: 1,
+                            pointHoverRadius: 6,
+                            pointBackgroundColor: 'rgb(59, 130, 246)',
+                            pointBorderColor: '#fff',
+                            pointBorderWidth: 2
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    interaction: {
+                        mode: 'index',
+                        intersect: false
+                    },
+                    plugins: {
+                        legend: {
+                            position: 'top',
+                            labels: {
+                                font: {
+                                    size: 14,
+                                    family: "'Inter', sans-serif",
+                                    weight: '600'
+                                },
+                                usePointStyle: true,
+                                padding: 20
+                              }
+                        },
+                        tooltip: {
+                            padding: 12,
+                            backgroundColor: 'rgba(15, 23, 42, 0.9)',
+                            titleFont: {
+                                size: 14,
+                                family: "'Inter', sans-serif",
+                                weight: 'bold'
+                            },
+                            bodyFont: {
+                                size: 13,
+                                family: "'Inter', sans-serif"
+                            },
+                            cornerRadius: 8
+                        }
+                    },
+                    scales: {
+                        x: {
+                            grid: {
+                                display: false
+                            },
+                            ticks: {
+                                maxTicksLimit: 12,
+                                font: {
+                                    size: 11,
+                                    family: "'Inter', sans-serif"
+                                }
+                            }
+                        },
+                        y: {
+                            grid: {
+                                color: 'rgba(241, 245, 249, 1)'
+                            },
+                            ticks: {
+                                font: {
+                                    size: 11,
+                                    family: "'Inter', sans-serif"
+                                }
+                            },
+                            beginAtZero: true
+                        }
+                    }
+                }
+            });
+        }
     </script>
 </body>
 {% endblock %}
