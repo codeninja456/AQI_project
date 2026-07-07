@@ -602,18 +602,18 @@ def predict_aqi(request):
         city = resolved_name
 
         # Get historical records first
-        last_records = AQIData.objects.filter(city=city).order_by('-datetime')[:24]  # Get at least 24 records
-        if len(last_records) < 24:
+        last_records = AQIData.objects.filter(city=city).order_by('-datetime')[:48]  # Get at least 48 records
+        if len(last_records) < 48:
             from django.core.management import call_command
             try:
                 # Automatically fetch 30 days of data for the city
                 call_command('fetch_historical_aqi', city=city, days=30)
-                last_records = AQIData.objects.filter(city=city).order_by('-datetime')[:24]
+                last_records = AQIData.objects.filter(city=city).order_by('-datetime')[:48]
             except Exception as e:
                 return JsonResponse({'error': f"Error fetching historical data for {city}: {str(e)}"})
             
-            if len(last_records) < 24:
-                return JsonResponse({'error': f"Need at least 24 historical records for {city}. Loaded failed."})
+            if len(last_records) < 48:
+                return JsonResponse({'error': f"Need at least 48 historical records for {city}. Loaded failed."})
 
         # Load model and scalers
         result = train_model(model_type, city=city)
@@ -892,17 +892,23 @@ def predict_aqi(request):
                     
                     # Reconstruct sequence of features
                     seq = []
-                    for i in range(-24, 0):
-                        h = sim_dates[i].hour
-                        m = sim_dates[i].month
-                        p_lag1 = sim_pm25[i-1]
-                        p_lag2 = sim_pm25[i-2]
-                        p_lag3 = sim_pm25[i-3]
-                        p_lag24 = sim_pm25[i-24] if len(sim_pm25) >= abs(i-24) else sim_pm25[0]
-                        p_roll6 = np.mean(sim_pm25[i-6:i]) if i-6 >= -len(sim_pm25) else np.mean(sim_pm25[:i])
-                        p_roll12 = np.mean(sim_pm25[i-12:i]) if i-12 >= -len(sim_pm25) else np.mean(sim_pm25[:i])
-                        p_roll24 = np.mean(sim_pm25[i-24:i]) if i-24 >= -len(sim_pm25) else np.mean(sim_pm25[:i])
-                        p_trend = sim_pm25[i] - sim_pm25[i-3] if i-3 >= -len(sim_pm25) else 0
+                    # Reconstruct sequence of features using positive indices
+                    seq = []
+                    L = len(sim_pm25)
+                    for j in range(24):
+                        idx = L - 24 + j
+                        h = sim_dates[idx].hour
+                        m = sim_dates[idx].month
+                        
+                        p_lag1 = sim_pm25[idx - 1]
+                        p_lag2 = sim_pm25[idx - 2]
+                        p_lag3 = sim_pm25[idx - 3]
+                        p_lag24 = sim_pm25[idx - 24]
+                        
+                        p_roll6 = np.mean(sim_pm25[idx - 6 : idx])
+                        p_roll12 = np.mean(sim_pm25[idx - 12 : idx])
+                        p_roll24 = np.mean(sim_pm25[idx - 24 : idx])
+                        p_trend = sim_pm25[idx] - sim_pm25[idx - 3]
                         
                         seq.append([
                             p_lag1, p_lag2, p_lag3, p_lag24,
