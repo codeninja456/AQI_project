@@ -1,6 +1,9 @@
 from django.http import HttpResponse
 from django.shortcuts import render
 from django.contrib.auth.decorators import login_required
+import logging
+
+logger = logging.getLogger("aqi_forecast")
 from .forms import PredictionForm
 from .models import AQIData
 import pandas as pd
@@ -344,11 +347,32 @@ def compute_sample_weights(y):
     
     return weights
 
+DEFAULT_PM25_MAX = 300.0   # µg/m³ — very high but real-world plausible ceiling
+DEFAULT_O3_MAX = 150.0     # ppb — realistic upper ceiling
+
+def clamp_prediction(value, historical_max, headroom=1.5):
+    """
+    Prevents LSTM/RF runaway predictions from producing garbage AQI.
+    Allows some headroom above historical max for genuine new highs,
+    but blocks physically impossible spikes.
+    """
+    upper_bound = historical_max * headroom
+    clamped = max(0, min(value, upper_bound))
+    if clamped != value:
+        logger.warning(f"Clamped extreme prediction: {value} -> {clamped}")
+    return clamped
+
+def smooth_series(values, window=3):
+    values = np.array(values, dtype=float)
+    # Ensure window is valid
+    if len(values) < window:
+        window = len(values)
+    smoothed = np.convolve(values, np.ones(window) / window, mode='same')
+    return smoothed.tolist()
+
 def calculate_overall_aqi(pm25, o3):
-    # Convert O3 from ppb to ppm if needed
-    o3_ppm = o3 / 1000  # Convert from ppb to ppm
-    
-    # PM2.5 breakpoints (in µg/m³) and corresponding AQI values
+    o3_ppm = o3 / 1000  # ppb -> ppm
+
     pm25_breakpoints = [
         (0, 12.0, 0, 50),
         (12.1, 35.4, 51, 100),
@@ -357,8 +381,6 @@ def calculate_overall_aqi(pm25, o3):
         (150.5, 250.4, 201, 300),
         (250.5, 500.4, 301, 500),
     ]
-    
-    # O3 breakpoints (in ppm) and corresponding AQI values
     o3_breakpoints = [
         (0, 0.054, 0, 50),
         (0.055, 0.070, 51, 100),
@@ -368,20 +390,41 @@ def calculate_overall_aqi(pm25, o3):
         (0.201, 0.604, 301, 500),
     ]
 
-    def calculate_aqi(concentration, breakpoints):
+    def calculate_aqi(concentration, breakpoints, label):
+        if concentration > breakpoints[-1][1]:
+            logger.warning(
+                f"{label} concentration {concentration} exceeds top breakpoint "
+                f"({breakpoints[-1][1]}) — capping at 500. Investigate model output."
+            )
+            return 500
         for low_c, high_c, low_aqi, high_aqi in breakpoints:
             if low_c <= concentration <= high_c:
                 return round(((high_aqi - low_aqi) / (high_c - low_c) * (concentration - low_c) + low_aqi))
-        # If concentration is below the lowest breakpoint, use the lowest AQI
-        if concentration < breakpoints[0][0]:
-            return breakpoints[0][2]  # Return lowest AQI value
-        # If concentration is above the highest breakpoint, use the highest AQI
-        return 500  # Above scale
+        return breakpoints[0][2]  # below scale -> floor at 0-index AQI
 
-    pm25_aqi = calculate_aqi(pm25, pm25_breakpoints)
-    o3_aqi = calculate_aqi(o3_ppm, o3_breakpoints)
-    
+    pm25_aqi = calculate_aqi(pm25, pm25_breakpoints, "PM2.5")
+    o3_aqi = calculate_aqi(o3_ppm, o3_breakpoints, "O3")
+
     return max(pm25_aqi, o3_aqi)
+
+def process_forecast(raw_pm25_list, raw_o3_list, historical_pm25_max=DEFAULT_PM25_MAX,
+                      historical_o3_max=DEFAULT_O3_MAX):
+    # 1. Clamp each raw prediction to realistic bounds
+    clamped_pm25 = [clamp_prediction(v, historical_pm25_max) for v in raw_pm25_list]
+    clamped_o3 = [clamp_prediction(v, historical_o3_max) for v in raw_o3_list]
+
+    # 2. Smooth to remove single-hour noise spikes
+    smoothed_pm25 = smooth_series(clamped_pm25)
+    smoothed_o3 = smooth_series(clamped_o3)
+
+    # 3. Compute AQI per hour from cleaned values
+    hourly_aqi = [calculate_overall_aqi(p, o) for p, o in zip(smoothed_pm25, smoothed_o3)]
+
+    return {
+        "hourly_pm25": smoothed_pm25,
+        "hourly_o3": smoothed_o3,
+        "hourly_aqi": hourly_aqi,
+    }
 
 def get_aqi_category(aqi):
     if aqi <= 50:
@@ -610,10 +653,18 @@ def predict_aqi(request):
                 pm25_pred_raw, o3_pred_raw = preds_unscaled[0], preds_unscaled[1]
 
             # Apply adjustment
-            pm25_pred, o3_pred = adjust_predictions(
+            pm25_pred_adj, o3_pred_adj = adjust_predictions(
                 prediction_datetime, pm25_pred_raw, o3_pred_raw, 
                 last_pm25, last_o3, recent_pm25_vals, recent_o3_vals
             )
+            
+            # Apply clamping based on historical bounds
+            from django.db.models import Max
+            historical_pm25_max = AQIData.objects.filter(city=city).aggregate(Max('pm25'))['pm25__max'] or DEFAULT_PM25_MAX
+            historical_o3_max = AQIData.objects.filter(city=city).aggregate(Max('o3'))['o3__max'] or DEFAULT_O3_MAX
+            
+            pm25_pred = clamp_prediction(pm25_pred_adj, historical_pm25_max)
+            o3_pred = clamp_prediction(o3_pred_adj, historical_o3_max)
 
             overall_aqi = calculate_overall_aqi(pm25_pred, o3_pred)
             aqi_category, health_message, health_tip = get_aqi_category(overall_aqi)
@@ -666,6 +717,9 @@ def predict_aqi(request):
             sim_o3_adj = list(records_df['o3'].values)
 
             predictions_list = []
+            raw_pm25_preds = []
+            raw_o3_preds = []
+            pred_dates = []
             start_datetime = datetime.combine(start_date, datetime.min.time())
             end_datetime = datetime.combine(end_date, datetime.max.time())
 
@@ -774,38 +828,57 @@ def predict_aqi(request):
                     preds_unscaled = scaler_y.inverse_transform(pred_scaled)[0]
                     pm25_pred_raw, o3_pred_raw = preds_unscaled[0], preds_unscaled[1]
 
-                # Apply scientific adjustment
-                pm25_pred, o3_pred = adjust_predictions(
+                # Apply scientific adjustment (which models diurnal variations)
+                pm25_pred_adj, o3_pred_adj = adjust_predictions(
                     current_dt, pm25_pred_raw, o3_pred_raw, 
                     sim_pm25_adj[-1], sim_o3_adj[-1], sim_pm25_adj, sim_o3_adj
                 )
 
-                # Append raw predictions to the raw tracking lists
+                # Append raw predictions to the raw tracking lists for stability
                 sim_pm25.append(pm25_pred_raw)
                 sim_o3.append(o3_pred_raw)
                 
                 # Append adjusted predictions to the adjusted tracking lists
-                sim_pm25_adj.append(pm25_pred)
-                sim_o3_adj.append(o3_pred)
+                sim_pm25_adj.append(pm25_pred_adj)
+                sim_o3_adj.append(o3_pred_adj)
                 
                 sim_dates.append(current_dt)
-                
-                # Overall AQI
-                overall_aqi = calculate_overall_aqi(pm25_pred, o3_pred)
-                aqi_category, _, _ = get_aqi_category(overall_aqi)
-                
-                predictions_list.append({
-                    'datetime': current_dt.strftime('%b %d, %I:%M %p'),
-                    'date_only': current_dt.strftime('%Y-%m-%d'),
-                    'pm25': round(pm25_pred, 2),
-                    'o3': round(o3_pred, 2),
-                    'aqi': round(overall_aqi, 2),
-                    'category': aqi_category
-                })
+                raw_pm25_preds.append(pm25_pred_adj)
+                raw_o3_preds.append(o3_pred_adj)
+                pred_dates.append(current_dt)
                 
                 current_dt += timedelta(hours=1)
                 
-            # Aggregate daily statistics
+            # Get historical bounds for clamping
+            from django.db.models import Max
+            historical_pm25_max = AQIData.objects.filter(city=city).aggregate(Max('pm25'))['pm25__max'] or DEFAULT_PM25_MAX
+            historical_o3_max = AQIData.objects.filter(city=city).aggregate(Max('o3'))['o3__max'] or DEFAULT_O3_MAX
+            
+            # Apply clamping + smoothing + AQI calculation in post-processing
+            processed = process_forecast(
+                raw_pm25_preds, raw_o3_preds, 
+                historical_pm25_max=historical_pm25_max, 
+                historical_o3_max=historical_o3_max
+            )
+            
+            smoothed_pm25 = processed["hourly_pm25"]
+            smoothed_o3 = processed["hourly_o3"]
+            hourly_aqi = processed["hourly_aqi"]
+            
+            # Reconstruct predictions_list using the smoothed and clamped values
+            predictions_list = []
+            for dt, p, o, a in zip(pred_dates, smoothed_pm25, smoothed_o3, hourly_aqi):
+                aqi_category, _, _ = get_aqi_category(a)
+                predictions_list.append({
+                    'datetime': dt.strftime('%b %d, %I:%M %p'),
+                    'date_only': dt.strftime('%Y-%m-%d'),
+                    'pm25': round(p, 2),
+                    'o3': round(o, 2),
+                    'aqi': round(a, 2),
+                    'category': aqi_category
+                })
+                
+            # Aggregate daily statistics using daily summaries derived from same list
             df_preds = pd.DataFrame(predictions_list)
             daily_stats = []
             for date_str, group in df_preds.groupby('date_only'):
