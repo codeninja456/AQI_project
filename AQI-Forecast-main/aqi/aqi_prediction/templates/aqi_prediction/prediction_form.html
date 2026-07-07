@@ -1,131 +1,245 @@
 {% extends "layout.html" %}
+{% load static %}
+
 {% block title %}
-<title>AQI Prediction</title>
+<title>AQI Prediction Dashboard</title>
 {% endblock %}
+
 {% block content %}
-<body class="bg-teal-100">
+<body class="bg-teal-50 font-sans">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
-    
-    <div class="container mx-auto my-8">
-        <div class="mt-8 p-6 bg-white rounded-lg shadow-lg">
-            <h1 class="text-2xl font-bold text-gray-800 flex items-center">
-                <i class="fas fa-chart-line mr-2 text-blue-500"></i> AQI Forecast
+
+    <div class="container mx-auto px-4 py-8 max-w-5xl">
+        <!-- Main Form Card -->
+        <div class="bg-white rounded-3xl shadow-xl border border-teal-100 p-8">
+            <h1 class="text-4xl font-extrabold text-teal-800 mb-2 flex items-center gap-3">
+                <i class="fas fa-chart-line text-teal-600"></i>
+                AQI Forecast Dashboard
             </h1>
-            
-            <form method="post" class="mb-8" id="predictionForm">
+            <p class="text-gray-600 text-lg mb-8">Choose your forecast parameters and get real-time machine learning predictions.</p>
+
+            <form method="post" class="space-y-6" id="predictionForm">
                 {% csrf_token %}
-                <div class="mb-4 animate-fade-in">
-                    {{ form.city.label_tag }}
-                    {{ form.city }}
+                
+                <!-- City and Model Row -->
+                <div class="grid md:grid-cols-2 gap-6">
+                    <div>
+                        {{ form.city.label_tag }}
+                        {{ form.city }}
+                    </div>
+                    <div>
+                        {{ form.model.label_tag }}
+                        {{ form.model }}
+                    </div>
                 </div>
-                <div class="mb-4">
-                    {{ form.prediction_datetime.label_tag }}
-                    <input type="datetime-local" 
-                           name="{{ form.prediction_datetime.name }}" 
-                           id="{{ form.prediction_datetime.auto_id }}"
-                           class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-teal-500 focus:ring-teal-500"
-                           required>
+
+                <!-- Forecast Type Toggle (Styled cards) -->
+                <div>
+                    <label class="block text-gray-700 font-bold mb-2">Select Forecast Method:</label>
+                    <div class="grid grid-cols-2 gap-4">
+                        <label class="forecast-type-card border-2 border-teal-500 bg-teal-50/50 rounded-2xl p-4 flex items-center justify-between cursor-pointer transition-all hover:scale-[1.01]" id="typeSingleCard">
+                            <div class="flex items-center gap-3">
+                                <div class="bg-teal-100 text-teal-700 p-2.5 rounded-xl">
+                                    <i class="fas fa-calendar-day text-lg"></i>
+                                </div>
+                                <div>
+                                    <span class="font-extrabold text-gray-800 block text-base">Single Date</span>
+                                    <span class="text-xs text-gray-500">Predict a single datetime</span>
+                                </div>
+                            </div>
+                            <input type="radio" name="forecast_type" value="single" class="w-5 h-5 text-teal-600 focus:ring-teal-500" checked onchange="toggleForecastFields('single')">
+                        </label>
+                        <label class="forecast-type-card border border-gray-200 rounded-2xl p-4 flex items-center justify-between cursor-pointer transition-all hover:scale-[1.01]" id="typeRangeCard">
+                            <div class="flex items-center gap-3">
+                                <div class="bg-blue-100 text-blue-700 p-2.5 rounded-xl">
+                                    <i class="fas fa-calendar-week text-lg"></i>
+                                </div>
+                                <div>
+                                    <span class="font-extrabold text-gray-800 block text-base">Date Range</span>
+                                    <span class="text-xs text-gray-500">Show multi-day trend line</span>
+                                </div>
+                            </div>
+                            <input type="radio" name="forecast_type" value="range" class="w-5 h-5 text-teal-600 focus:ring-teal-500" onchange="toggleForecastFields('range')">
+                        </label>
+                    </div>
                 </div>
-                <div class="mb-4">
-                    {{ form.model.label_tag }}
-                    {{ form.model }}
+
+                <!-- Inputs Area -->
+                <div class="bg-teal-50/30 border border-teal-50 rounded-2xl p-6">
+                    <!-- Single Date/Time Input -->
+                    <div id="singleDateGroup" class="transition-all duration-300">
+                        {{ form.prediction_datetime.label_tag }}
+                        <input type="datetime-local" 
+                               name="{{ form.prediction_datetime.name }}" 
+                               id="{{ form.prediction_datetime.auto_id }}"
+                               class="mt-1 block w-full rounded-xl border-gray-300 shadow-sm focus:border-teal-500 focus:ring-teal-500 py-3 px-4">
+                    </div>
+
+                    <!-- Date Range Inputs -->
+                    <div id="rangeDateGroup" class="hidden transition-all duration-300 grid md:grid-cols-2 gap-6">
+                        <div>
+                            {{ form.start_date.label_tag }}
+                            {{ form.start_date }}
+                        </div>
+                        <div>
+                            {{ form.end_date.label_tag }}
+                            {{ form.end_date }}
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Submit Action -->
+                <div>
+                    <button type="submit" class="w-full bg-teal-600 hover:bg-teal-700 text-white font-bold py-4 rounded-xl shadow-lg hover:shadow-xl transition-all text-xl flex items-center justify-center gap-2 hover:scale-[1.01]">
+                        Generate Forecast
+                    </button>
+                </div>
+            </form>
+        </div>
+
+        <!-- Custom Error Alert Box -->
+        <div id="errorAlert" class="hidden mt-6 bg-red-50 border-l-4 border-red-500 p-4 rounded-xl text-red-700 font-medium flex items-center gap-3">
+            <i class="fas fa-exclamation-circle text-lg"></i>
+            <span id="errorMessage">An error occurred.</span>
+        </div>
+
+        <!-- Results Section Container (Dynamically filled via AJAX) -->
+        <div id="resultsContainer" class="mt-10 hidden transition-all duration-500 opacity-0"></div>
+    </div>
+
+    <!-- Loading Animation Modal -->
+    <div id="loadingAnimation" class="hidden">
+        <div class="fixed top-0 left-0 w-full h-full bg-black bg-opacity-60 flex items-center justify-center z-50 animate-fade-in">
+            <div class="bg-white p-8 rounded-2xl shadow-2xl text-center max-w-md w-full border border-teal-100">
+                <div class="relative h-24 w-24 mx-auto mb-6">
+                    <div class="absolute top-0 left-0 h-full w-full animate-spin rounded-full border-4 border-t-teal-500 border-r-teal-300 border-b-teal-200 border-l-transparent" style="animation-duration: 1.2s;"></div>
+                    <div class="absolute top-2 left-2 h-20 w-20 animate-spin rounded-full border-4 border-t-blue-500 border-r-blue-300 border-b-blue-200 border-l-transparent" style="animation-duration: 1.8s;"></div>
+                    <div class="absolute top-4 left-4 h-16 w-16 animate-spin rounded-full border-4 border-t-purple-500 border-r-purple-300 border-b-purple-200 border-l-transparent" style="animation-duration: 2.4s;"></div>
                 </div>
                 
-                <button type="submit" class="w-full sm:w-auto bg-teal-500 hover:bg-teal-600 text-white px-6 py-2 rounded-md flex items-center justify-center mt-4">
-                    Forecast
-                </button>
-            </form>
-
-           <script>
-                // Function to format datetime string
-                function formatDateTime(date) {
-                    const year = date.getFullYear();
-                    const month = String(date.getMonth() + 1).padStart(2, '0');
-                    const day = String(date.getDate()).padStart(2, '0');
-                    const hours = String(date.getHours()).padStart(2, '0');
-                    const minutes = String(date.getMinutes()).padStart(2, '0');
-                    return `${year}-${month}-${day}T${hours}:${minutes}`;
-                }
-
-                // Set min and max datetime
-                const datetimeInput = document.getElementById('{{ form.prediction_datetime.auto_id }}');
-                const now = new Date();
-                const thirtyDaysFromNow = new Date(now);
-                thirtyDaysFromNow.setDate(now.getDate() + 30);
-
-                // Set min to current datetime and max to 30 days from now
-                datetimeInput.min = formatDateTime(now);
-                datetimeInput.max = formatDateTime(thirtyDaysFromNow);
-
-                // Set default value to current datetime
-                datetimeInput.value = formatDateTime(now);
-            </script>
-
-            <!-- Loading Animation -->
-            <div id="loadingAnimation" class="hidden">
-                <div class="fixed top-0 left-0 w-full h-full bg-black bg-opacity-50 flex items-center justify-center z-50">
-                    <div class="bg-white p-8 rounded-lg shadow-lg text-center max-w-md w-full">
-                        <!-- Added multiple spinning rings -->
-                        <div class="relative h-24 w-24 mx-auto mb-6">
-                            <div class="absolute top-0 left-0 h-full w-full animate-spin rounded-full border-4 border-t-teal-500 border-r-teal-300 border-b-teal-200 border-l-transparent" style="animation-duration: 1.5s;"></div>
-                            <div class="absolute top-2 left-2 h-20 w-20 animate-spin rounded-full border-4 border-t-blue-500 border-r-blue-300 border-b-blue-200 border-l-transparent" style="animation-duration: 2s;"></div>
-                            <div class="absolute top-4 left-4 h-16 w-16 animate-spin rounded-full border-4 border-t-purple-500 border-r-purple-300 border-b-purple-200 border-l-transparent" style="animation-duration: 2.5s;"></div>
-                        </div>
-                        
-                        <h2 class="text-xl font-semibold text-gray-800 mb-2">Analyzing Air Quality Data</h2>
-                        <p class="text-gray-600 mb-6">Processing environmental parameters...</p>
-                        
-                        <!-- Enhanced progress bar -->
-                        <div class="w-full bg-gray-200 rounded-full h-3 mb-3 overflow-hidden">
-                            <div id="progressBar" class="bg-gradient-to-r from-teal-500 via-blue-500 to-purple-500 h-full rounded-full transition-all duration-300 relative" style="width: 0%">
-                                <div class="absolute inset-0 bg-white opacity-20 animate-pulse"></div>
-                            </div>
-                        </div>
-                        
-                        <!-- Added loading steps -->
-                        <div class="text-left text-sm text-gray-600 mt-4">
-                            <div id="step1" class="flex items-center opacity-50">
-                                <i class="fas fa-circle-notch animate-spin mr-2"></i>
-                                <span>Collecting meteorological data...</span>
-                            </div>
-                            <div id="step2" class="flex items-center opacity-50 mt-2">
-                                <i class="fas fa-circle-notch animate-spin mr-2"></i>
-                                <span>Analyzing pollution patterns...</span>
-                            </div>
-                            <div id="step3" class="flex items-center opacity-50 mt-2">
-                                <i class="fas fa-circle-notch animate-spin mr-2"></i>
-                                <span>Generating forecast...</span>
-                            </div>
-                        </div>
-                        
-                        <p class="text-sm text-gray-600 mt-4">Progress: <span id="progressPercent">0</span>%</p>
+                <h2 class="text-2xl font-bold text-gray-800 mb-2">Simulating Future Scenarios</h2>
+                <p class="text-gray-500 mb-6" id="loadingSubtitle">Running calculations...</p>
+                
+                <div class="w-full bg-gray-200 rounded-full h-3 mb-3 overflow-hidden">
+                    <div id="progressBar" class="bg-gradient-to-r from-teal-500 via-blue-500 to-purple-500 h-full rounded-full transition-all duration-300 relative" style="width: 0%">
+                        <div class="absolute inset-0 bg-white opacity-20 animate-pulse"></div>
                     </div>
                 </div>
-            </div>
-
-            {% if predictions %}
-            <div class="bg-white shadow rounded p-6">
-                <h2 class="text-xl font-semibold mb-4">Predicted AQI Values:</h2>
-                <div class="grid grid-cols-2 gap-4">
-                    <div class="border p-4 rounded">
-                        <h3 class="font-medium">PM2.5</h3>
-                        <p class="text-2xl">{{ predictions.pm25 }}</p>
+                
+                <div class="text-left text-sm text-gray-600 mt-6 space-y-2 border-t pt-4 border-gray-100">
+                    <div id="step1" class="flex items-center opacity-50">
+                        <i class="fas fa-circle-notch animate-spin mr-2"></i>
+                        <span>Loading historical baselines...</span>
                     </div>
-                    <div class="border p-4 rounded">
-                        <h3 class="font-medium">O3</h3>
-                        <p class="text-2xl">{{ predictions.o3 }}</p>
+                    <div id="step2" class="flex items-center opacity-50">
+                        <i class="fas fa-circle-notch animate-spin mr-2"></i>
+                        <span id="loadingStep2Text">Propagating hourly calculations...</span>
+                    </div>
+                    <div id="step3" class="flex items-center opacity-50">
+                        <i class="fas fa-circle-notch animate-spin mr-2"></i>
+                        <span>Compiling final graphical report...</span>
                     </div>
                 </div>
+                
+                <p class="text-sm text-gray-500 mt-6">Progress: <span id="progressPercent" class="font-bold">0</span>%</p>
             </div>
-            {% endif %}
         </div>
     </div>
 
-    <!-- Updated JavaScript for Loading Animation -->
+    <!-- ChartJS and script libraries -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    
     <script>
+    // Form Date Defaults setup
+    const formatDateTime = (date) => {
+        const year = date.getFullYear();
+        const month = String(date.getMonth() + 1).padStart(2, '0');
+        const day = String(date.getDate()).padStart(2, '0');
+        const hours = String(date.getHours()).padStart(2, '0');
+        const minutes = String(date.getMinutes()).padStart(2, '0');
+        return `${year}-${month}-${day}T${hours}:${minutes}`;
+    };
+
+    const formatDateOnly = (date) => {
+        const year = date.getFullYear();
+        const month = String(date.getMonth() + 1).padStart(2, '0');
+        const day = String(date.getDate()).padStart(2, '0');
+        return `${year}-${month}-${day}`;
+    };
+
+    const datetimeInput = document.getElementById('{{ form.prediction_datetime.auto_id }}');
+    const startDateInput = document.getElementById('id_start_date');
+    const endDateInput = document.getElementById('id_end_date');
+    
+    const now = new Date();
+    const thirtyDaysFromNow = new Date(now);
+    thirtyDaysFromNow.setDate(now.getDate() + 30);
+
+    const fourDaysFromNow = new Date(now);
+    fourDaysFromNow.setDate(now.getDate() + 4);
+
+    if (datetimeInput) {
+        datetimeInput.min = formatDateTime(now);
+        datetimeInput.max = formatDateTime(thirtyDaysFromNow);
+        datetimeInput.value = formatDateTime(now);
+    }
+    if (startDateInput) {
+        startDateInput.value = formatDateOnly(now);
+    }
+    if (endDateInput) {
+        endDateInput.value = formatDateOnly(fourDaysFromNow);
+    }
+
+    // Toggle fields based on forecast type selection
+    function toggleForecastFields(type) {
+        const singleCard = document.getElementById('typeSingleCard');
+        const rangeCard = document.getElementById('typeRangeCard');
+        const singleGroup = document.getElementById('singleDateGroup');
+        const rangeGroup = document.getElementById('rangeDateGroup');
+
+        if (type === 'single') {
+            singleCard.classList.add('border-teal-500', 'bg-teal-50/50');
+            singleCard.classList.remove('border-gray-200');
+            rangeCard.classList.remove('border-teal-500', 'bg-teal-50/50');
+            rangeCard.classList.add('border-gray-200');
+            
+            singleGroup.classList.remove('hidden');
+            rangeGroup.classList.add('hidden');
+        } else {
+            rangeCard.classList.add('border-teal-500', 'bg-teal-50/50');
+            rangeCard.classList.remove('border-gray-200');
+            singleCard.classList.remove('border-teal-500', 'bg-teal-50/50');
+            singleCard.classList.add('border-gray-200');
+            
+            rangeGroup.classList.remove('hidden');
+            singleGroup.classList.add('hidden');
+        }
+    }
+
+    // AJAX Form Interceptor
     document.getElementById('predictionForm').addEventListener('submit', function(e) {
+        e.preventDefault();
+        
+        // Hide old alerts and results
+        document.getElementById('errorAlert').classList.add('hidden');
+        const resultsContainer = document.getElementById('resultsContainer');
+        resultsContainer.classList.add('hidden', 'opacity-0');
+        
+        // Show loading screen
         document.getElementById('loadingAnimation').classList.remove('hidden');
         
+        const forecastType = document.querySelector('input[name="forecast_type"]:checked').value;
+        const loadingStep2 = document.getElementById('loadingStep2Text');
+        const loadingSubtitle = document.getElementById('loadingSubtitle');
+        
+        if (forecastType === 'single') {
+            loadingSubtitle.textContent = 'Processing environmental parameters...';
+            loadingStep2.textContent = 'Analyzing pollution patterns...';
+        } else {
+            loadingSubtitle.textContent = 'Iterating multi-step forecasting algorithm...';
+            loadingStep2.textContent = 'Propagating hourly lag calculations...';
+        }
+
         let progress = 0;
         const progressBar = document.getElementById('progressBar');
         const progressPercent = document.getElementById('progressPercent');
@@ -133,21 +247,22 @@
         const step2 = document.getElementById('step2');
         const step3 = document.getElementById('step3');
         
+        // Reset steps
+        step1.classList.add('opacity-50'); step1.classList.remove('text-teal-600');
+        step2.classList.add('opacity-50'); step2.classList.remove('text-blue-600');
+        step3.classList.add('opacity-50'); step3.classList.remove('text-purple-600');
+
         const interval = setInterval(() => {
             if (progress >= 100) {
                 clearInterval(interval);
                 return;
             }
-            
-            // More natural progress simulation
             const increment = Math.max(1, Math.floor((100 - progress) / 12));
             progress = Math.min(99, progress + increment);
             
-            // Update progress bar and text
             progressBar.style.width = `${progress}%`;
             progressPercent.textContent = progress;
             
-            // Update steps based on progress
             if (progress >= 30) {
                 step1.classList.remove('opacity-50');
                 step1.classList.add('text-teal-600');
@@ -162,17 +277,256 @@
             }
         }, 100);
 
-        setTimeout(() => {
+        // Fetch data
+        const formData = new FormData(this);
+        fetch(window.location.href, {
+            method: 'POST',
+            body: formData,
+            headers: {
+                'X-Requested-With': 'XMLHttpRequest'
+            }
+        })
+        .then(response => response.json())
+        .then(data => {
+            clearInterval(interval);
+            
+            // Finish loader animation
             progressBar.style.width = '100%';
             progressPercent.textContent = '100';
-            step1.classList.remove('opacity-50');
-            step2.classList.remove('opacity-50');
-            step3.classList.remove('opacity-50');
-            step1.classList.add('text-teal-600');
-            step2.classList.add('text-blue-600');
-            step3.classList.add('text-purple-600');
-        }, 2000);
+            step1.classList.remove('opacity-50'); step1.classList.add('text-teal-600');
+            step2.classList.remove('opacity-50'); step2.classList.add('text-blue-600');
+            step3.classList.remove('opacity-50'); step3.classList.add('text-purple-600');
+            
+            setTimeout(() => {
+                document.getElementById('loadingAnimation').classList.add('hidden');
+                
+                if (data.error) {
+                    document.getElementById('errorMessage').textContent = data.error;
+                    document.getElementById('errorAlert').classList.remove('hidden');
+                    return;
+                }
+                
+                renderResults(data);
+            }, 500);
+        })
+        .catch(err => {
+            clearInterval(interval);
+            document.getElementById('loadingAnimation').classList.add('hidden');
+            document.getElementById('errorMessage').textContent = "Failed to communicate with server. Please try again.";
+            document.getElementById('errorAlert').classList.remove('hidden');
+        });
     });
+
+    // Render dynamically inside Results Div
+    function renderResults(data) {
+        const container = document.getElementById('resultsContainer');
+        container.innerHTML = ''; // Clear previous results
+        
+        if (data.type === 'single') {
+            const val = data.overall_aqi;
+            let badgeBg = 'bg-green-100 text-green-700';
+            let aqiColor = 'text-green-600';
+            if (val > 150) {
+                badgeBg = 'bg-red-100 text-red-700';
+                aqiColor = 'text-red-600';
+            } else if (val > 100) {
+                badgeBg = 'bg-orange-100 text-orange-700';
+                aqiColor = 'text-orange-600';
+            } else if (val > 50) {
+                badgeBg = 'bg-yellow-100 text-yellow-700';
+                aqiColor = 'text-yellow-500';
+            }
+
+            container.innerHTML = `
+                <div class="bg-white rounded-3xl border border-teal-100 shadow-xl p-8 transform transition-all animate-fade-in">
+                    <h2 class="text-3xl font-extrabold text-gray-800 mb-6">Forecast Prediction Details</h2>
+                    
+                    <div class="grid md:grid-cols-3 gap-8 items-center">
+                        <div class="text-center border-b md:border-b-0 md:border-r border-gray-100 pb-6 md:pb-0">
+                            <span class="text-gray-500 font-semibold uppercase tracking-wider text-sm">Predicted AQI</span>
+                            <div class="text-7xl font-black ${aqiColor} my-4">${val}</div>
+                            <span class="px-4 py-1.5 rounded-full text-xs font-bold uppercase tracking-wider ${badgeBg}">${data.aqi_category}</span>
+                        </div>
+                        
+                        <div class="md:col-span-2">
+                            <div class="grid grid-cols-2 gap-4 mb-6">
+                                <div class="bg-teal-50/50 p-4 rounded-2xl border border-teal-50">
+                                    <span class="text-gray-500 text-xs font-medium block">PM2.5 (µg/m³)</span>
+                                    <span class="text-2xl font-bold text-teal-800 mt-1 block">${data.pm25_prediction}</span>
+                                </div>
+                                <div class="bg-blue-50/50 p-4 rounded-2xl border border-blue-50">
+                                    <span class="text-gray-500 text-xs font-medium block">Ozone (O₃) (ppb)</span>
+                                    <span class="text-2xl font-bold text-blue-800 mt-1 block">${data.o3_prediction}</span>
+                                </div>
+                            </div>
+                            
+                            <div class="border-t border-gray-100 pt-6">
+                                <div class="flex items-start gap-3">
+                                    <div class="bg-teal-100 text-teal-700 p-2 rounded-xl mt-0.5">
+                                        <i class="fas fa-info-circle"></i>
+                                    </div>
+                                    <div>
+                                        <h4 class="font-extrabold text-gray-800 text-base">Health Recommendation</h4>
+                                        <p class="text-gray-600 text-sm mt-1">${data.health_message}</p>
+                                    </div>
+                                </div>
+                                <div class="flex items-start gap-3 mt-4">
+                                    <div class="bg-blue-100 text-blue-700 p-2 rounded-xl mt-0.5">
+                                        <i class="fas fa-shield-alt"></i>
+                                    </div>
+                                    <div>
+                                        <h4 class="font-extrabold text-gray-800 text-base">Safety Tip</h4>
+                                        <p class="text-gray-600 text-sm mt-1">${data.health_tip}</p>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            `;
+        } else if (data.type === 'range') {
+            // Generate range HTML with ChartJS canvas and daily averages
+            let statsHtml = '';
+            data.daily_stats.forEach(stat => {
+                let badgeBg = 'bg-green-100 text-green-700';
+                let aqiColor = 'text-green-600';
+                if (stat.avg_aqi > 150) {
+                    badgeBg = 'bg-red-100 text-red-700';
+                    aqiColor = 'text-red-600';
+                } else if (stat.avg_aqi > 100) {
+                    badgeBg = 'bg-orange-100 text-orange-700';
+                    aqiColor = 'text-orange-600';
+                } else if (stat.avg_aqi > 50) {
+                    badgeBg = 'bg-yellow-100 text-yellow-700';
+                    aqiColor = 'text-yellow-500';
+                }
+
+                statsHtml += `
+                    <div class="bg-white rounded-2xl border border-teal-100 p-5 flex flex-col justify-between items-center text-center shadow-sm">
+                        <span class="text-gray-500 font-semibold text-xs block mb-2">${stat.date}</span>
+                        <span class="text-4xl font-black ${aqiColor} block">${stat.avg_aqi}</span>
+                        <span class="px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider block mt-3 ${badgeBg}">${stat.category}</span>
+                    </div>
+                `;
+            });
+
+            container.innerHTML = `
+                <div class="space-y-10 animate-fade-in">
+                    <!-- Graph section -->
+                    <div class="bg-white rounded-3xl border border-teal-100 shadow-xl p-8">
+                        <h2 class="text-2xl font-bold text-gray-800 mb-6 flex items-center gap-2">
+                            <i class="fas fa-chart-area text-teal-600"></i>
+                            Predicted Forecast Curve
+                        </h2>
+                        <div class="relative w-full h-[380px]">
+                            <canvas id="rangeChartCanvas"></canvas>
+                        </div>
+                    </div>
+                    
+                    <!-- Daily summarized cards -->
+                    <div>
+                        <h3 class="text-xl font-bold text-gray-800 mb-4 flex items-center gap-2">
+                            <i class="fas fa-calendar-alt text-teal-600"></i>
+                            Daily Forecast Summaries
+                        </h3>
+                        <div class="grid grid-cols-2 md:grid-cols-5 gap-4">
+                            ${statsHtml}
+                        </div>
+                    </div>
+                </div>
+            `;
+            
+            // Build ChartJS Line Graph
+            const canvasCtx = document.getElementById('rangeChartCanvas').getContext('2d');
+            const aqiGrad = canvasCtx.createLinearGradient(0, 0, 0, 380);
+            aqiGrad.addColorStop(0, 'rgba(13, 148, 136, 0.3)');
+            aqiGrad.addColorStop(1, 'rgba(13, 148, 136, 0.0)');
+            
+            const o3Grad = canvasCtx.createLinearGradient(0, 0, 0, 380);
+            o3Grad.addColorStop(0, 'rgba(59, 130, 246, 0.3)');
+            o3Grad.addColorStop(1, 'rgba(59, 130, 246, 0.0)');
+
+            new Chart(canvasCtx, {
+                type: 'line',
+                data: {
+                    labels: data.chart_labels,
+                    datasets: [
+                        {
+                            label: 'Predicted Overall AQI',
+                            data: data.chart_aqi,
+                            borderColor: 'rgb(13, 148, 136)',
+                            backgroundColor: aqiGrad,
+                            fill: true,
+                            tension: 0.3,
+                            borderWidth: 3,
+                            pointRadius: 1,
+                            pointHoverRadius: 6,
+                            pointBackgroundColor: 'rgb(13, 148, 136)',
+                            pointBorderColor: '#fff',
+                            pointBorderWidth: 2
+                        },
+                        {
+                            label: 'Predicted Ozone (O₃) (ppb)',
+                            data: data.chart_o3,
+                            borderColor: 'rgb(59, 130, 246)',
+                            backgroundColor: o3Grad,
+                            fill: true,
+                            tension: 0.3,
+                            borderWidth: 2,
+                            pointRadius: 0,
+                            pointHoverRadius: 5,
+                            pointBackgroundColor: 'rgb(59, 130, 246)',
+                            pointBorderColor: '#fff',
+                            pointBorderWidth: 2,
+                            borderDash: [5, 5]
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    interaction: {
+                        mode: 'index',
+                        intersect: false
+                    },
+                    plugins: {
+                        legend: {
+                            position: 'top',
+                            labels: {
+                                font: { size: 12, family: "'Inter', sans-serif", weight: '600' },
+                                usePointStyle: true,
+                                padding: 15
+                            }
+                        },
+                        tooltip: {
+                            padding: 10,
+                            backgroundColor: 'rgba(15, 23, 42, 0.95)',
+                            cornerRadius: 8
+                        }
+                    },
+                    scales: {
+                        x: {
+                            grid: { display: false },
+                            ticks: { maxTicksLimit: 8, font: { size: 10 } }
+                        },
+                        y: {
+                            grid: { color: 'rgba(241, 245, 249, 1)' },
+                            ticks: { font: { size: 10 } },
+                            beginAtZero: true
+                        }
+                    }
+                }
+            });
+        }
+
+        // Show result and scroll down smoothly
+        container.classList.remove('hidden');
+        setTimeout(() => {
+            container.classList.add('opacity-100');
+            container.classList.remove('opacity-0');
+            container.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }, 100);
+    }
     </script>
 </body>
 {% endblock %}

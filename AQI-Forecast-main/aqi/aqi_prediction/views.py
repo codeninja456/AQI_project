@@ -1,5 +1,6 @@
 from django.http import HttpResponse
 from django.shortcuts import render
+from django.contrib.auth.decorators import login_required
 from .forms import PredictionForm
 from .models import AQIData
 import pandas as pd
@@ -583,7 +584,11 @@ def predict_aqi(request):
     form = PredictionForm(request.POST or None)
 
     if request.method == 'POST' and form.is_valid():
-        prediction_datetime = form.cleaned_data['prediction_datetime']
+        from django.http import JsonResponse
+        from datetime import datetime, timedelta
+        import json
+        
+        forecast_type = form.cleaned_data['forecast_type']
         model_type = form.cleaned_data['model']
         city_raw = form.cleaned_data['city'].strip().title()
 
@@ -591,7 +596,7 @@ def predict_aqi(request):
         from aqi.views import geocode_city
         geocoded = geocode_city(city_raw)
         if not geocoded:
-            return HttpResponse(f"Could not find city '{city_raw}' in India. Please check the spelling.")
+            return JsonResponse({'error': f"Could not find city '{city_raw}' in India. Please check the spelling."})
         
         resolved_name, lat, lon = geocoded
         city = resolved_name
@@ -605,165 +610,200 @@ def predict_aqi(request):
                 call_command('fetch_historical_aqi', city=city, days=30)
                 last_records = AQIData.objects.filter(city=city).order_by('-datetime')[:24]
             except Exception as e:
-                return HttpResponse(f"Error fetching historical data for {city}: {str(e)}")
+                return JsonResponse({'error': f"Error fetching historical data for {city}: {str(e)}"})
             
             if len(last_records) < 24:
-                return HttpResponse(f"Need at least 24 historical records for {city}. Loaded failed.")
-        
-        # Create DataFrame from records
+                return JsonResponse({'error': f"Need at least 24 historical records for {city}. Loaded failed."})
+
+        # Load model and scalers
+        result = train_model(model_type, city=city)
+        if result is None:
+            return JsonResponse({'error': "Invalid model type or training failed."})
+
+        # Prepare DataFrame from records
         records_df = pd.DataFrame(list(last_records.values()))
         records_df['datetime'] = pd.to_datetime(records_df['datetime'])
         records_df = records_df.sort_values('datetime')
-
-        # Get recent actual value before model-specific code
         recent_actual = records_df['pm25'].iloc[-1]
 
-        result = train_model(model_type, city=city)
-        if result is None:
-            return HttpResponse("Invalid model type")
-        
-        if model_type == 'lstm':
-            (model, (scaler_X, scaler_y), sequence_length), features = result
-            
-            # Get exactly sequence_length records
-            last_records = AQIData.objects.filter(city=city).order_by('-datetime')[:sequence_length]
-            if len(last_records) < sequence_length:
-                return HttpResponse(f"Need at least {sequence_length} historical records for {city}")
-            
-            records_df = pd.DataFrame(list(last_records.values()))
-            records_df['datetime'] = pd.to_datetime(records_df['datetime'])
-            records_df = records_df.sort_values('datetime')
-            
-            # Get recent values for adjustments
-            recent_values = records_df['pm25'].values
-            recent_o3_values = records_df['o3'].values
-            last_value = recent_values[-1]
-            last_o3_value = recent_o3_values[-1]
-            
-            # Time-based factors for Kathmandu
-            hour = prediction_datetime.hour
-            month = prediction_datetime.month
-            
-            # Enhanced seasonal adjustments
-            winter_factor = 2.2 if month in [11, 12, 1, 2] else 1.0
-            pre_monsoon_factor = 1.8 if month in [3, 4, 5] else 1.0
-            monsoon_factor = 0.6 if month in [6, 7, 8, 9] else 1.0
-            
-            # Daily pattern adjustments
-            morning_rush = 2.0 if 6 <= hour <= 10 else 1.0
-            evening_rush = 2.2 if 16 <= hour <= 20 else 1.0
-            night_time = 0.6 if (hour >= 23 or hour <= 4) else 1.0
-            
-            # O3 specific adjustments
-            o3_daytime_factor = 1.8 if 10 <= hour <= 16 else 1.0
-            o3_seasonal_factor = 1.5 if month in [3, 4, 5] else 1.0
-            
-            # Create sequence data
-            sequence_data = []
-            for _, record in records_df.iterrows():
-                feature_dict = {
-                    'pm25_lag1': record['pm25'],
-                    'pm25_lag2': records_df['pm25'].shift(1).ffill().iloc[-1],
-                    'pm25_lag3': records_df['pm25'].shift(2).ffill().iloc[-1],
-                    'pm25_lag24': records_df['pm25'].shift(23).ffill().iloc[-1],
-                    'pm25_rolling_mean_6': records_df['pm25'].rolling(window=6, min_periods=1).mean().iloc[-1],
-                    'pm25_rolling_mean_12': records_df['pm25'].rolling(window=12, min_periods=1).mean().iloc[-1],
-                    'pm25_rolling_mean_24': records_df['pm25'].rolling(window=24, min_periods=1).mean().iloc[-1],
-                    'pm25_trend': records_df['pm25'].diff(periods=3).fillna(0).iloc[-1],
-                    'month': record['datetime'].month,
-                    'month_sin': np.sin(2 * np.pi * record['datetime'].month/12),
-                    'month_cos': np.cos(2 * np.pi * record['datetime'].month/12),
-                    'is_peak_hour': 1 if record['datetime'].hour in [7,8,9,17,18,19] else 0
-                }
-                sequence_data.append([feature_dict[f] for f in features])
-            
-            # Prepare sequence for LSTM
-            sequence_data = np.array(sequence_data)
-            sequence_scaled = scaler_X.transform(sequence_data)
-            sequence_scaled = sequence_scaled.reshape(1, sequence_length, len(features))
-            
-            # Make base prediction
-            prediction_scaled = model.predict(sequence_scaled, verbose=0)
-            base_pred = scaler_y.inverse_transform(prediction_scaled)[0][0]
-            
-            # Get recent statistics
-            recent_values = records_df['pm25'].values[-24:]
-            recent_mean = np.mean(recent_values)
-            recent_std = np.std(recent_values)
-            
-            # Add enhanced dynamic variation
-            pm25_pred = add_dynamic_variation(base_pred, hour, month, last_value, recent_values)
-            
-            # Season-specific bounds with more variation
-            if month in [11, 12, 1, 2]:  # Winter
-                min_pm25 = max(180 + np.random.uniform(-30, 30), last_value * 0.7)
-                max_pm25 = min(900 + np.random.uniform(-50, 50), last_value * 2.0)
-            elif month in [3, 4, 5]:  # Pre-monsoon
-                min_pm25 = max(120 + np.random.uniform(-20, 20), last_value * 0.7)
-                max_pm25 = min(700 + np.random.uniform(-40, 40), last_value * 1.8)
-            else:  # Other seasons
-                min_pm25 = max(60 + np.random.uniform(-15, 15), last_value * 0.6)
-                max_pm25 = min(500 + np.random.uniform(-30, 30), last_value * 1.6)
-            
-            # Additional time-based adjustments
-            if 16 <= hour <= 20:  # Evening peak
-                min_pm25 *= np.random.uniform(1.2, 1.4)
-                max_pm25 *= np.random.uniform(1.2, 1.4)
-                pm25_pred += recent_std * np.random.uniform(0.2, 0.4)
-            elif 6 <= hour <= 9:  # Morning peak
-                min_pm25 *= np.random.uniform(1.1, 1.3)
-                max_pm25 *= np.random.uniform(1.1, 1.3)
-                pm25_pred += recent_std * np.random.uniform(0.1, 0.3)
-            
-            # Final random adjustments
-            pm25_pred += np.random.uniform(-10, 10)
-            pm25_pred = np.clip(pm25_pred, min_pm25, max_pm25)
-            
-            # Enhanced O3 prediction
-            o3_base = last_o3_value * o3_daytime_factor * o3_seasonal_factor
-            o3_pred = add_dynamic_variation(o3_base, hour, month, last_o3_value, recent_o3_values)
-            o3_pred = np.clip(o3_pred, 
-                             max(25, last_o3_value * 0.6 * np.random.uniform(0.9, 1.1)),
-                             min(180, last_o3_value * 1.7 * np.random.uniform(0.9, 1.1)))
-            
-            print(f"\nEnhanced Prediction Details:")
-            print(f"Hour: {hour}, Month: {month}")
-            print(f"Last Value: {last_value:.2f}")
-            print(f"Base Prediction: {base_pred:.2f}")
-            print(f"Final Prediction: {pm25_pred:.2f}")
-            print(f"Recent Mean: {recent_mean:.2f}")
-            print(f"Recent Std: {recent_std:.2f}")
-            print(f"Bounds: [{min_pm25:.2f}, {max_pm25:.2f}]")
-            
-            # Clip prediction to reasonable range
-            pm25_pred = np.clip(pm25_pred, 0, 500)
-            
-            # Print prediction details
-            print(f"\n{model_type.upper()} Prediction Details:")
-            print(f"Recent actual PM2.5: {recent_actual:.2f}")
-            print(f"Predicted PM2.5: {pm25_pred:.2f}")
-            print(f"Prediction delta: {pm25_pred - recent_actual:.2f}")
-            print(f"Percent change: {((pm25_pred - recent_actual) / recent_actual * 100):.2f}%")
-            
-            # Calculate overall AQI
-            overall_aqi = calculate_overall_aqi(pm25_pred, recent_actual)  # Using recent_actual for O3
-            aqi_category, health_message, health_tip = get_aqi_category(overall_aqi)
+        if forecast_type == 'single':
+            prediction_datetime = form.cleaned_data['prediction_datetime']
+            if not prediction_datetime:
+                return JsonResponse({'error': "Please select a prediction date and time."})
 
+            if model_type == 'lstm':
+                (model, (scaler_X, scaler_y), sequence_length), features = result
+                
+                # Get exactly sequence_length records
+                last_records_seq = AQIData.objects.filter(city=city).order_by('-datetime')[:sequence_length]
+                if len(last_records_seq) < sequence_length:
+                    return JsonResponse({'error': f"Need at least {sequence_length} historical records for {city}"})
+                
+                records_df_seq = pd.DataFrame(list(last_records_seq.values()))
+                records_df_seq['datetime'] = pd.to_datetime(records_df_seq['datetime'])
+                records_df_seq = records_df_seq.sort_values('datetime')
+                
+                # Get recent values for adjustments
+                recent_values = records_df_seq['pm25'].values
+                recent_o3_values = records_df_seq['o3'].values
+                last_value = recent_values[-1]
+                last_o3_value = recent_o3_values[-1]
+                
+                hour = prediction_datetime.hour
+                month = prediction_datetime.month
+                
+                # Enhanced seasonal adjustments
+                winter_factor = 2.2 if month in [11, 12, 1, 2] else 1.0
+                pre_monsoon_factor = 1.8 if month in [3, 4, 5] else 1.0
+                monsoon_factor = 0.5 if month in [6, 7, 8, 9] else 1.0
+                
+                # Create sequence data
+                sequence_data = []
+                for i, record in records_df_seq.iterrows():
+                    feature_dict = {
+                        'pm25_lag1': records_df_seq['pm25'].shift(1).fillna(record['pm25']).iloc[i],
+                        'pm25_lag2': records_df_seq['pm25'].shift(2).fillna(record['pm25']).iloc[i],
+                        'pm25_lag3': records_df_seq['pm25'].shift(3).fillna(record['pm25']).iloc[i],
+                        'pm25_lag24': records_df_seq['pm25'].shift(24).fillna(record['pm25']).iloc[i],
+                        'pm25_rolling_mean_6': records_df_seq['pm25'].rolling(window=6, min_periods=1).mean().iloc[i],
+                        'pm25_rolling_mean_12': records_df_seq['pm25'].rolling(window=12, min_periods=1).mean().iloc[i],
+                        'pm25_rolling_mean_24': records_df_seq['pm25'].rolling(window=24, min_periods=1).mean().iloc[i],
+                        'pm25_trend': records_df_seq['pm25'].diff(periods=3).fillna(0).iloc[i],
+                        'month': record['datetime'].month,
+                        'month_sin': np.sin(2 * np.pi * record['datetime'].month/12),
+                        'month_cos': np.cos(2 * np.pi * record['datetime'].month/12),
+                        'is_peak_hour': 1 if record['datetime'].hour in [7,8,9,17,18,19] else 0
+                    }
+                    sequence_data.append([feature_dict[f] for f in features])
+                
+                sequence_data = np.array(sequence_data)
+                sequence_scaled = scaler_X.transform(sequence_data)
+                sequence_scaled = sequence_scaled.reshape(1, sequence_length, len(features))
+                
+                prediction_scaled = model.predict(sequence_scaled, verbose=0)
+                base_pred = scaler_y.inverse_transform(prediction_scaled)[0][0]
+                
+                # Get recent statistics
+                recent_values_stat = records_df_seq['pm25'].values[-24:]
+                pm25_pred = add_dynamic_variation(base_pred, hour, month, last_value, recent_values_stat)
+                
+                # Season-specific bounds
+                if month in [11, 12, 1, 2]:  # Winter
+                    min_pm25 = max(180 + np.random.uniform(-30, 30), last_value * 0.7)
+                    max_pm25 = min(900 + np.random.uniform(-50, 50), last_value * 2.0)
+                elif month in [3, 4, 5]:  # Pre-monsoon
+                    min_pm25 = max(120 + np.random.uniform(-20, 20), last_value * 0.7)
+                    max_pm25 = min(700 + np.random.uniform(-40, 40), last_value * 1.8)
+                else:  # Other seasons
+                    min_pm25 = max(60 + np.random.uniform(-15, 15), last_value * 0.6)
+                    max_pm25 = min(500 + np.random.uniform(-35, 35), last_value * 1.5)
+                
+                pm25_pred = np.clip(pm25_pred, min_pm25, max_pm25)
+                
+            elif model_type == 'random_forest':
+                (pm25_model, o3_model), scaler_X, features = result
+                recent_values = records_df['pm25'].values
+                recent_o3_values = records_df['o3'].values
+                last_value = recent_values[-1]
+                last_o3_value = recent_o3_values[-1]
+                
+                hour = prediction_datetime.hour
+                month = prediction_datetime.month
+                
+                winter_factor = 2.0 if month in [11, 12, 1, 2] else 1.0
+                pre_monsoon_factor = 1.5 if month in [3, 4, 5] else 1.0
+                monsoon_factor = 0.5 if month in [6, 7, 8, 9] else 1.0
+                
+                morning_rush = 1.6 if hour in [7, 8, 9] else 1.0
+                evening_rush = 2.2 if hour in [16, 17, 18, 19, 20] else 1.0
+                night_time = 0.6 if hour in [23, 0, 1, 2, 3, 4] else 1.0
+                
+                o3_daytime_factor = 1.6 if 10 <= hour <= 16 else 0.5
+                o3_seasonal_factor = 0.7 if month in [6, 7, 8, 9] else 1.2
+                
+                # Prepare features
+                pm25_lag1 = recent_values[-1]
+                pm25_lag2 = recent_values[-2]
+                pm25_lag3 = recent_values[-3]
+                pm25_lag24 = recent_values[-24] if len(recent_values) >= 24 else recent_values[0]
+                
+                pm25_rolling_6 = np.mean(recent_values[-6:])
+                pm25_rolling_12 = np.mean(recent_values[-12:])
+                pm25_rolling_24 = np.mean(recent_values[-24:])
+                pm25_trend = recent_values[-1] - recent_values[-4] if len(recent_values) >= 4 else 0
+                
+                input_data = {
+                    'pm25_lag1': [pm25_lag1],
+                    'pm25_lag2': [pm25_lag2],
+                    'pm25_lag3': [pm25_lag3],
+                    'pm25_lag24': [pm25_lag24],
+                    'pm25_rolling_mean_6': [pm25_rolling_6],
+                    'pm25_rolling_mean_12': [pm25_rolling_12],
+                    'pm25_rolling_mean_24': [pm25_rolling_24],
+                    'pm25_trend': [pm25_trend],
+                    'month': [month],
+                    'month_sin': [np.sin(2 * np.pi * month/12)],
+                    'month_cos': [np.cos(2 * np.pi * month/12)],
+                    'is_peak_hour': [1 if hour in [7,8,9,17,18,19] else 0]
+                }
+                
+                feature_data = pd.DataFrame(input_data)
+                feature_data = feature_data[features]
+                feature_data_scaled = scaler_X.transform(feature_data)
+                
+                base_pred = pm25_model.predict(feature_data_scaled)[0]
+                
+                seasonal_adjustment = base_pred * (winter_factor * pre_monsoon_factor * monsoon_factor - 1.0)
+                daily_adjustment = base_pred * (morning_rush * evening_rush * night_time - 1.0)
+                
+                recent_trend = np.mean(np.diff(recent_values[-6:])) if len(recent_values) >= 6 else 0
+                recent_std = np.std(recent_values[-24:]) if len(recent_values) >= 24 else np.std(recent_values)
+                
+                hour_factor = np.sin(2 * np.pi * hour / 24)
+                random_adjustment = np.random.normal(0, recent_std * 0.2) * (1 + abs(hour_factor))
+                
+                pm25_pred = base_pred + seasonal_adjustment + daily_adjustment + random_adjustment
+                
+                trend_adjustment = recent_trend * 3
+                pm25_pred += trend_adjustment
+                
+                if 16 <= hour <= 20:
+                    evening_boost = base_pred * 0.4
+                    pm25_pred += evening_boost
+                
+                # PM2.5 bounds for Kathmandu (based on historical data)
+                if winter_factor > 1:  # Winter
+                    min_pm25 = max(150, last_value * 0.7)
+                    max_pm25 = min(800, last_value * 1.8)
+                elif pre_monsoon_factor > 1:  # Pre-monsoon
+                    min_pm25 = max(100, last_value * 0.7)
+                    max_pm25 = min(600, last_value * 1.6)
+                else:  # Other seasons
+                    min_pm25 = max(50, last_value * 0.6)
+                    max_pm25 = min(400, last_value * 1.4)
+                
+                pm25_pred = np.clip(pm25_pred, min_pm25, max_pm25)
+            
+            # Clip final prediction to reasonable range
+            pm25_pred = np.clip(pm25_pred, 0, 500)
+            overall_aqi = calculate_overall_aqi(pm25_pred, recent_actual)
+            aqi_category, health_message, health_tip = get_aqi_category(overall_aqi)
+            
             # Save prediction
             new_prediction = AQIPrediction(
                 prediction_datetime=prediction_datetime,
                 pm25_prediction=pm25_pred,
-                o3_prediction=recent_actual,  # Using recent_actual for O3
+                o3_prediction=recent_actual,
                 overall_aqi=overall_aqi,
                 aqi_category=aqi_category,
                 model_type=model_type,
                 city=city
             )
             new_prediction.save()
-
-            return render(request, 'aqi_prediction/prediction_result.html', {
-                'form': form,
-                'prediction_datetime': prediction_datetime,
+            
+            return JsonResponse({
+                'type': 'single',
+                'prediction_datetime': prediction_datetime.strftime('%B %d, %Y, %I:%M %p'),
                 'pm25_prediction': round(pm25_pred, 2),
                 'o3_prediction': round(recent_actual, 2),
                 'overall_aqi': round(overall_aqi, 2),
@@ -773,153 +813,175 @@ def predict_aqi(request):
                 'health_tip': health_tip,
                 'recent_actual_pm25': round(recent_actual, 2)
             })
-
-        elif model_type == 'random_forest':
-            (pm25_model, o3_model), scaler_X, features = result
             
-            # Sort and prepare recent data
-            records_df = records_df.sort_values('datetime')
-            recent_values = records_df['pm25'].values
-            recent_o3_values = records_df['o3'].values
-            last_value = recent_values[-1]
-            last_o3_value = recent_o3_values[-1]
+        elif forecast_type == 'range':
+            start_date = form.cleaned_data['start_date']
+            end_date = form.cleaned_data['end_date']
+            if not start_date or not end_date:
+                return JsonResponse({'error': "Please select start and end dates."})
+                
+            if start_date > end_date:
+                return JsonResponse({'error': "Start Date must be before or equal to End Date."})
+                
+            days_diff = (end_date - start_date).days
+            if days_diff > 10:
+                return JsonResponse({'error': "Maximum forecast range is 10 days."})
+                
+            sim_pm25 = list(records_df['pm25'].values)
+            sim_o3 = list(records_df['o3'].values)
+            sim_dates = list(records_df['datetime'].dt.to_pydatetime())
             
-            # Time-based factors for Kathmandu
-            hour = prediction_datetime.hour
-            month = prediction_datetime.month
+            predictions_list = []
             
-            # Enhanced seasonal adjustments for PM2.5 in Kathmandu
-            # Winter months have very high pollution due to temperature inversion
-            winter_factor = 2.2 if month in [11, 12, 1, 2] else 1.0  # Increased further
-            # Pre-monsoon months have high pollution due to dust
-            pre_monsoon_factor = 1.8 if month in [3, 4, 5] else 1.0  # Increased
-            # Monsoon months have lower pollution due to rain
-            monsoon_factor = 0.6 if month in [6, 7, 8, 9] else 1.0  # Decreased further
+            start_datetime = datetime.combine(start_date, datetime.min.time())
+            end_datetime = datetime.combine(end_date, datetime.max.time())
             
-            # Enhanced daily patterns for PM2.5
-            morning_rush = 2.0 if 6 <= hour <= 10 else 1.0  # Increased for morning peak
-            evening_rush = 2.2 if 16 <= hour <= 20 else 1.0  # Increased for evening peak
-            night_time = 0.6 if (hour >= 23 or hour <= 4) else 1.0  # Decreased for night
+            current_dt = start_datetime
+            while current_dt <= end_datetime:
+                hour = current_dt.hour
+                month = current_dt.month
+                day = current_dt.day
+                
+                # PM2.5 lags
+                pm25_lag1 = sim_pm25[-1]
+                pm25_lag2 = sim_pm25[-2]
+                pm25_lag3 = sim_pm25[-3]
+                pm25_lag24 = sim_pm25[-24] if len(sim_pm25) >= 24 else sim_pm25[0]
+                
+                # PM2.5 rolling means
+                pm25_rolling_6 = np.mean(sim_pm25[-6:])
+                pm25_rolling_12 = np.mean(sim_pm25[-12:])
+                pm25_rolling_24 = np.mean(sim_pm25[-24:])
+                
+                # PM2.5 trend
+                pm25_trend = sim_pm25[-1] - sim_pm25[-4] if len(sim_pm25) >= 4 else 0
+                
+                if model_type == 'random_forest':
+                    (pm25_model, o3_model), scaler_X, features = result
+                    
+                    input_data = {
+                        'pm25_lag1': [pm25_lag1],
+                        'pm25_lag2': [pm25_lag2],
+                        'pm25_lag3': [pm25_lag3],
+                        'pm25_lag24': [pm25_lag24],
+                        'pm25_rolling_mean_6': [pm25_rolling_6],
+                        'pm25_rolling_mean_12': [pm25_rolling_12],
+                        'pm25_rolling_mean_24': [pm25_rolling_24],
+                        'pm25_trend': [pm25_trend],
+                        'month': [month],
+                        'month_sin': [np.sin(2 * np.pi * month/12)],
+                        'month_cos': [np.cos(2 * np.pi * month/12)],
+                        'is_peak_hour': [1 if hour in [7,8,9,17,18,19] else 0]
+                    }
+                    feature_data = pd.DataFrame(input_data)
+                    feature_data = feature_data[features]
+                    feature_data_scaled = scaler_X.transform(feature_data)
+                    
+                    # PM2.5 prediction
+                    pred_val = pm25_model.predict(feature_data_scaled)[0]
+                    pred_val = np.clip(pred_val, 0, 500)
+                    
+                    # Ozone prediction (approximate based on solar patterns)
+                    o3_base = sim_o3[-1]
+                    o3_daytime_factor = 1.8 if 10 <= hour <= 16 else 0.6
+                    o3_seasonal_factor = 0.7 if month in [6,7,8,9] else 1.2
+                    pred_o3 = np.clip(o3_base * o3_daytime_factor * o3_seasonal_factor, 5, 200)
+                    
+                elif model_type == 'lstm':
+                    (model, (scaler_X, scaler_y), sequence_length), features = result
+                    
+                    # Reconstruct sequence of features
+                    seq = []
+                    for i in range(-24, 0):
+                        h = sim_dates[i].hour
+                        m = sim_dates[i].month
+                        p_lag1 = sim_pm25[i-1]
+                        p_lag2 = sim_pm25[i-2]
+                        p_lag3 = sim_pm25[i-3]
+                        p_lag24 = sim_pm25[i-24] if len(sim_pm25) >= abs(i-24) else sim_pm25[0]
+                        p_roll6 = np.mean(sim_pm25[i-6:i]) if i-6 >= -len(sim_pm25) else np.mean(sim_pm25[:i])
+                        p_roll12 = np.mean(sim_pm25[i-12:i]) if i-12 >= -len(sim_pm25) else np.mean(sim_pm25[:i])
+                        p_roll24 = np.mean(sim_pm25[i-24:i]) if i-24 >= -len(sim_pm25) else np.mean(sim_pm25[:i])
+                        p_trend = sim_pm25[i] - sim_pm25[i-3] if i-3 >= -len(sim_pm25) else 0
+                        
+                        seq.append([
+                            p_lag1, p_lag2, p_lag3, p_lag24,
+                            p_roll6, p_roll12, p_roll24, p_trend,
+                            m, np.sin(2 * np.pi * m/12), np.cos(2 * np.pi * m/12),
+                            1 if h in [7,8,9,17,18,19] else 0
+                        ])
+                    
+                    seq = np.array(seq)
+                    seq_scaled = scaler_X.transform(seq)
+                    seq_scaled = seq_scaled.reshape(1, sequence_length, len(features))
+                    
+                    pred_scaled = model.predict(seq_scaled, verbose=0)
+                    pred_val = scaler_y.inverse_transform(pred_scaled)[0][0]
+                    pred_val = np.clip(pred_val, 0, 500)
+                    
+                    # O3
+                    o3_base = sim_o3[-1]
+                    o3_daytime_factor = 1.8 if 10 <= hour <= 16 else 0.6
+                    o3_seasonal_factor = 0.7 if month in [6,7,8,9] else 1.2
+                    pred_o3 = np.clip(o3_base * o3_daytime_factor * o3_seasonal_factor, 5, 200)
+                    
+                # Append to simulated tracking lists
+                sim_pm25.append(pred_val)
+                sim_o3.append(pred_o3)
+                sim_dates.append(current_dt)
+                
+                # Overall AQI
+                overall_aqi = calculate_overall_aqi(pred_val, pred_o3)
+                aqi_category, _, _ = get_aqi_category(overall_aqi)
+                
+                predictions_list.append({
+                    'datetime': current_dt.strftime('%b %d, %I:%M %p'),
+                    'date_only': current_dt.strftime('%Y-%m-%d'),
+                    'pm25': round(pred_val, 2),
+                    'o3': round(pred_o3, 2),
+                    'aqi': round(overall_aqi, 2),
+                    'category': aqi_category
+                })
+                
+                current_dt += timedelta(hours=1)
+                
+            # Aggregate daily statistics
+            df_preds = pd.DataFrame(predictions_list)
+            daily_stats = []
+            for date_str, group in df_preds.groupby('date_only'):
+                avg_aqi = group['aqi'].mean()
+                max_pm25 = group['pm25'].max()
+                cat, _, _ = get_aqi_category(avg_aqi)
+                
+                parsed_date = datetime.strptime(date_str, '%Y-%m-%d')
+                display_date = parsed_date.strftime('%B %d')
+                
+                daily_stats.append({
+                    'date': display_date,
+                    'avg_aqi': round(avg_aqi, 1),
+                    'max_pm25': round(max_pm25, 2),
+                    'category': cat
+                })
+                
+            # Prepare lists for Chart.js
+            chart_labels = [p['datetime'] for p in predictions_list]
+            chart_pm25 = [p['pm25'] for p in predictions_list]
+            chart_o3 = [p['o3'] for p in predictions_list]
+            chart_aqi = [p['aqi'] for p in predictions_list]
             
-            # O3 specific adjustments (O3 peaks during midday due to sunlight)
-            o3_daytime_factor = 1.8 if 10 <= hour <= 16 else 1.0  # Peak during sunny hours
-            o3_seasonal_factor = 1.5 if month in [3, 4, 5] else 1.0  # Higher in pre-monsoon
+            return JsonResponse({
+                'type': 'range',
+                'city': city,
+                'model_type': model_type,
+                'predictions': predictions_list,
+                'daily_stats': daily_stats,
+                'chart_labels': chart_labels,
+                'chart_pm25': chart_pm25,
+                'chart_o3': chart_o3,
+                'chart_aqi': chart_aqi
+            })
             
-            # Create base features
-            input_data = {
-                'pm25_lag1': [last_value],
-                'pm25_lag2': [records_df['pm25'].iloc[-2] if len(records_df) > 1 else last_value],
-                'pm25_lag3': [records_df['pm25'].iloc[-3] if len(records_df) > 2 else last_value],
-                'pm25_lag24': [records_df['pm25'].iloc[-24] if len(records_df) >= 24 else last_value],
-                'pm25_rolling_mean_6': [records_df['pm25'].tail(6).mean()],
-                'pm25_rolling_mean_12': [records_df['pm25'].tail(12).mean()],
-                'pm25_rolling_mean_24': [records_df['pm25'].tail(24).mean()],
-                'pm25_trend': [records_df['pm25'].diff().tail(3).mean()],
-                'month': [month],
-                'month_sin': [np.sin(2 * np.pi * month/12)],
-                'month_cos': [np.cos(2 * np.pi * month/12)],
-                'is_peak_hour': [1 if hour in [7,8,9,17,18,19] else 0]
-            }
-            
-            # Create and scale features
-            feature_data = pd.DataFrame(input_data)
-            feature_data = feature_data[BASE_FEATURES]
-            feature_data_scaled = scaler_X.transform(feature_data)
-            
-            # Make base predictions
-            base_pred = pm25_model.predict(feature_data_scaled)[0]
-            
-            # Apply Kathmandu-specific adjustments for PM2.5
-            seasonal_adjustment = base_pred * (winter_factor * pre_monsoon_factor * monsoon_factor - 1.0)
-            daily_adjustment = base_pred * (morning_rush * evening_rush * night_time - 1.0)
-            
-            # Calculate recent trends and variability
-            recent_trend = np.mean(np.diff(recent_values[-6:])) if len(recent_values) >= 6 else 0
-            recent_std = np.std(recent_values[-24:]) if len(recent_values) >= 24 else np.std(recent_values)
-            
-            # Enhanced random adjustment based on time of day
-            hour_factor = np.sin(2 * np.pi * hour / 24)
-            random_adjustment = np.random.normal(0, recent_std * 0.2) * (1 + abs(hour_factor))
-            
-            # Combine all adjustments for PM2.5
-            pm25_pred = base_pred + seasonal_adjustment + daily_adjustment + random_adjustment
-            
-            # Add trend component with increased weight
-            trend_adjustment = recent_trend * 3  # Increased weight on trend
-            pm25_pred += trend_adjustment
-            
-            # Additional evening boost for PM2.5
-            if 16 <= hour <= 20:
-                evening_boost = base_pred * 0.4  # Increased evening boost
-                pm25_pred += evening_boost
-            
-            # Adjust O3 prediction based on time of day and season
-            o3_pred = last_o3_value * o3_daytime_factor * o3_seasonal_factor
-            
-            # PM2.5 bounds for Kathmandu (based on historical data)
-            if winter_factor > 1:  # Winter
-                min_pm25 = max(150, last_value * 0.7)
-                max_pm25 = min(800, last_value * 1.8)
-            elif pre_monsoon_factor > 1:  # Pre-monsoon
-                min_pm25 = max(100, last_value * 0.7)
-                max_pm25 = min(600, last_value * 1.6)
-            else:  # Other seasons
-                min_pm25 = max(50, last_value * 0.6)
-                max_pm25 = min(400, last_value * 1.4)
-            
-            # O3 bounds (ppb)
-            min_o3 = max(20, last_o3_value * 0.7)
-            max_o3 = min(150, last_o3_value * 1.5)
-            
-            # Clip predictions to bounds
-            pm25_pred = np.clip(pm25_pred, min_pm25, max_pm25)
-            o3_pred = np.clip(o3_pred, min_o3, max_o3)
-            
-            print(f"\nDebug Info:")
-            print(f"DateTime: {prediction_datetime}")
-            print(f"Last PM2.5: {last_value:.2f}, Predicted PM2.5: {pm25_pred:.2f}")
-            print(f"Last O3: {last_o3_value:.2f}, Predicted O3: {o3_pred:.2f}")
-            print(f"Seasonal factors - Winter: {winter_factor:.1f}, Pre-monsoon: {pre_monsoon_factor:.1f}, Monsoon: {monsoon_factor:.1f}")
-            print(f"Time factors - Morning: {morning_rush:.1f}, Evening: {evening_rush:.1f}, Night: {night_time:.1f}")
-            print(f"O3 factors - Daytime: {o3_daytime_factor:.1f}, Seasonal: {o3_seasonal_factor:.1f}")
+    if request.method == 'POST':
+        return JsonResponse({'error': 'Invalid form data submission.'})
         
-        # Clip prediction to reasonable range
-        pm25_pred = np.clip(pm25_pred, 0, 500)
-        
-        # Print prediction details
-        print(f"\n{model_type.upper()} Prediction Details:")
-        print(f"Recent actual PM2.5: {recent_actual:.2f}")
-        print(f"Predicted PM2.5: {pm25_pred:.2f}")
-        print(f"Prediction delta: {pm25_pred - recent_actual:.2f}")
-        print(f"Percent change: {((pm25_pred - recent_actual) / recent_actual * 100):.2f}%")
-        
-        # Calculate overall AQI
-        overall_aqi = calculate_overall_aqi(pm25_pred, recent_actual)  # Using recent_actual for O3
-        aqi_category, health_message, health_tip = get_aqi_category(overall_aqi)
-
-        # Save prediction
-        new_prediction = AQIPrediction(
-            prediction_datetime=prediction_datetime,
-            pm25_prediction=pm25_pred,
-            o3_prediction=recent_actual,  # Using recent_actual for O3
-            overall_aqi=overall_aqi,
-            aqi_category=aqi_category,
-            model_type=model_type,
-            city=city
-        )
-        new_prediction.save()
-
-        return render(request, 'aqi_prediction/prediction_result.html', {
-            'form': form,
-            'prediction_datetime': prediction_datetime,
-            'pm25_prediction': round(pm25_pred, 2),
-            'o3_prediction': round(recent_actual, 2),
-            'overall_aqi': round(overall_aqi, 2),
-            'model_type': model_type,
-            'aqi_category': aqi_category,
-            'health_message': health_message,
-            'health_tip': health_tip,
-            'recent_actual_pm25': round(recent_actual, 2)
-        })
-
     return render(request, 'aqi_prediction/prediction_form.html', {'form': form})
