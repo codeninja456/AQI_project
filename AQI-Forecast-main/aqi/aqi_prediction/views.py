@@ -680,7 +680,7 @@ def predict_aqi(request):
                 sequence_scaled = scaler_X.transform(sequence_data)
                 sequence_scaled = sequence_scaled.reshape(1, sequence_length, len(features))
                 
-                prediction_scaled = model.predict(sequence_scaled, verbose=0)
+                prediction_scaled = model(sequence_scaled, training=False).numpy()
                 base_pred = scaler_y.inverse_transform(prediction_scaled)[0][0]
                 
                 # Get recent statistics
@@ -915,7 +915,7 @@ def predict_aqi(request):
                     seq_scaled = scaler_X.transform(seq)
                     seq_scaled = seq_scaled.reshape(1, sequence_length, len(features))
                     
-                    pred_scaled = model.predict(seq_scaled, verbose=0)
+                    pred_scaled = model(seq_scaled, training=False).numpy()
                     pred_val = scaler_y.inverse_transform(pred_scaled)[0][0]
                     pred_val = np.clip(pred_val, 0, 500)
                     
