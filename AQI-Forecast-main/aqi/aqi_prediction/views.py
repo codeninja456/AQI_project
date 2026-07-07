@@ -313,54 +313,25 @@ def train_model(model_type, city="Mumbai"):
         # Get input shape
         n_features = len(BASE_FEATURES)
         
-        # Build LSTM model with correct input shape
+        # Build lightweight LSTM model (optimized for 512MB RAM constraints)
         model = Sequential([
-            LSTM(64, input_shape=(sequence_length, n_features), 
-                 return_sequences=True),
-            BatchNormalization(),
-            Dropout(0.2),
-            
-            LSTM(32, return_sequences=False),  # Changed to return_sequences=False
-            BatchNormalization(),
-            Dropout(0.2),
-            
-            Dense(16, activation='relu'),
-            BatchNormalization(),
-            
+            LSTM(16, input_shape=(sequence_length, n_features), return_sequences=False),
+            Dropout(0.1),
+            Dense(8, activation='relu'),
             Dense(1)
         ])
         
         # Compile model
-        optimizer = Adam(learning_rate=0.001)
+        optimizer = Adam(learning_rate=0.005)
         model.compile(optimizer=optimizer, loss='huber', metrics=['mae'])
         
-        # Callbacks
-        early_stopping = EarlyStopping(
-            monitor='val_loss',
-            patience=10,
-            restore_best_weights=True,
-            min_delta=0.0001
-        )
-        
-        reduce_lr = ReduceLROnPlateau(
-            monitor='val_loss',
-            factor=0.2,
-            patience=5,
-            min_lr=0.0001
-        )
-        
-        # Print model summary for debugging
-        print("\nLSTM Model Summary:")
-        model.summary()
-        
-        # Train model
+        # Train model quickly (15 epochs)
         history = model.fit(
             X_train, y_train,
             validation_data=(X_val, y_val),
-            epochs=100,
-            batch_size=32,
-            callbacks=[early_stopping, reduce_lr],
-            verbose=1
+            epochs=15,
+            batch_size=64,
+            verbose=0
         )
         
         # Evaluate model
