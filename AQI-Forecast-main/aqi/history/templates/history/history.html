@@ -16,6 +16,7 @@
                 <thead class="bg-gray-100">
                     <tr>
                         <th class="py-3 px-6 text-left text-sm font-medium text-gray-700">Date/Time</th>
+                        <th class="py-3 px-6 text-left text-sm font-medium text-gray-700">City</th>
                         <th class="py-3 px-6 text-left text-sm font-medium text-gray-700">PM2.5 (μg/m³)</th>
                         <th class="py-3 px-6 text-left text-sm font-medium text-gray-700">O3 (ppb)</th>
                         <th class="py-3 px-6 text-left text-sm font-medium text-gray-700">Overall AQI</th>
@@ -28,6 +29,9 @@
                         <tr class="hover:bg-gray-50 transition-colors duration-200">
                             <td class="py-4 px-6 text-sm text-gray-900">
                                 {{ prediction.prediction_datetime|date:"Y-m-d H:i" }}
+                            </td>
+                            <td class="py-4 px-6 text-sm text-gray-900">
+                                {{ prediction.city }}
                             </td>
                             <td class="py-4 px-6 text-sm text-gray-900">
                                 {{ prediction.pm25_prediction|floatformat:2 }}
